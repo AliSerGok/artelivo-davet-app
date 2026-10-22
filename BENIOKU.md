@@ -46,8 +46,13 @@ penceresini kapatmak uygulamayı kapatır.
    oluşur (Saatchi'deki her şey MAPPING.md kurallarıyla alınır).
 4. **"Seçililerin önizlemelerini aç"** → ana tarayıcında (Artelivo'ya yönetici girişli)
    önizlemeler açılır → her birinde **"Onayla"**. "Durumları yenile" ile burada da
-   "Önizleme onaylı" görünür.
-5. Seç → **"Seçililere mesaj hazırla"** → **Mesajlar**'da her mesajı oku, istersen düzelt.
+   "Önizleme onaylı" görünür; sanatçı **Bağlantısı taranmayan** sekmesine geçer.
+   Seç → **"Bağlantıları tara"** → e-posta/link bulunur, sanatçı **Bağlantısı taranan**
+   sekmesine geçer. Tarama hiçbir şey göndermez.
+   Sekmeler akışın sırasıdır: Taslağı oluşturulmayan → Taslağı oluşturulan → Bağlantısı
+   taranmayan → Bağlantısı taranan → Mesajı hazır → Mesaj gönderilen.
+5. Seç → **"Mesaj hazırla"** → **Mesajlar**'da her mesajı oku, istersen düzelt ya da
+   **"Mesajı sil"** (sanatçı Bağlantısı taranan sekmesine döner).
    Davet linki mesaj hazırlanırken alınır ve mesajın içine yazılır (30 gün o an başlar;
    mesajları göndermeye yakın hazırla). Elle düzenlerken linki silersen gönderimde sona eklenir.
 6. **"Seçilileri gönder"** → her biri için link alınır, Instagram'da profile gidilip DM
@@ -57,7 +62,8 @@ penceresini kapatmak uygulamayı kapatır.
      **"Threads'e giriş (bir kez)"**.
    - Sanatçının **güvenilir** bir e-postası bulunduysa (adını taşıyan, kendi sitesindeki ya
      da kendi yazdığı yerdeki) aynı mesaj **info@artelivo.com**'dan e-postayla da gider.
-     Mesaj gönderildikten sonra bulunan e-posta da kendiliğinden gider. Mağaza/galeri
+     Mesaj gönderildikten sonra bulunan e-posta kendiliğinden gitmez; Mesajlar'da
+     **"E-postayı gönder"** ile sen gönderirsin. Mağaza/galeri
      sayfasındaki başka adreslere gitmez; onlar yalnız Bağlantılar'da görünür.
 
 Sanatçı linki açınca e-postasını yazar, 6 haneli kodla doğrular ve profili alır — ya da

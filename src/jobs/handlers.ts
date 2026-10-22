@@ -692,7 +692,10 @@ registerJob("discover", async (artistId): Promise<JobOutcome> => {
   // bir Instagram isteğidir: DM ile aynı bekleme ve günlük sınır (ayarlardan).
   const settings = getSettings();
   const igBudget = !c.igChecked && countToday("ig_profile_visit") < settings.igDmPerDay;
-  if (igBudget && nextDmAt() > Date.now()) return { deferUntil: new Date(nextDmAt()) };
+  if (igBudget && nextDmAt() > Date.now()) {
+    saveContacts(artistId, c); // kaynaktan okunanlar kaybolmasın
+    return { deferUntil: new Date(nextDmAt()) };
+  }
   if (!c.igChecked && !igBudget) logEvent("ig_profile_visit_skipped", { artistId });
   if (igBudget) {
     logEvent("ig_profile_visit", { artistId });
@@ -736,7 +739,11 @@ registerJob("discover", async (artistId): Promise<JobOutcome> => {
         const place = `https://${e.from}`;
         const domain = e.value.split("@")[1] ?? "";
         const host = hostOf(place);
-        const own = owned(place) && (isAggregator(place) || host === domain || host.endsWith(`.${domain}`));
+        // Sitede sahiplik ALAN ADINDAN (ayseart.com), yoldan değil: galerinin
+        // sanatçı sayfası (galerix.com/sanatcilar/ayse-kaya) galerinindir.
+        const own = isAggregator(place)
+          ? owned(place)
+          : owned(`https://${host}`) && (host === domain || host.endsWith(`.${domain}`));
         addEmail(c, e.value, e.from, artist.name, own);
       }
       for (const p of found.phones) addPhone(c, p.value, p.from);
@@ -784,12 +791,8 @@ registerJob("discover", async (artistId): Promise<JobOutcome> => {
   c.pages = pages;
   saveContacts(artistId, c);
   logEvent("discover_done", { artistId, emails: c.emails.length, links: c.links.length });
-  // Mesajı gönderilmek üzere seçilmişse e-posta da gider (kullanıcı: "e-posta
-  // varsa her halükarda").
-  const dm = db.prepare("SELECT status FROM dm_messages WHERE artist_id = ?").get(artistId) as
-    | { status: string }
-    | undefined;
-  if (dm && dm.status !== "draft") queueEmail(artistId);
+  // Tarama hiçbir şey göndermez (kullanıcı, 2026-10-23): e-posta yalnız
+  // Mesajlar'da "gönder" denince sıraya girer.
 });
 
 // ─── 4c. Davet e-postası ────────────────────────────────────────────────────
