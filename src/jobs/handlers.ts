@@ -22,15 +22,40 @@ import {
   seenOutcome,
 } from "../db/index.js";
 import {
+  DmClosedError,
   DmUnverifiedError,
   InstagramBlockedError,
   sendDm,
+  sendThreadsDm,
+  visitProfileInfo,
 } from "../instagram/index.js";
 import { randomPause, sleep, workTab } from "../lib/browser.js";
 import { notify } from "../lib/notify.js";
 import { countryByIso } from "../sources/countries.js";
 import { sourceOf } from "../sources/index.js";
 import type { ScrapedArtist } from "../sources/types.js";
+import {
+  addEmail,
+  addLink,
+  addPhone,
+  bestEmail,
+  nameTokens,
+  notInspectable,
+  readContacts,
+  recordOnly,
+  saveContacts,
+  urlKey,
+} from "../contacts/index.js";
+import {
+  applyIgInfo,
+  crawl,
+  extractEmails,
+  MAX_PAGES,
+  readFacebookContact,
+  readPinterest,
+  readPlatformPage,
+} from "../discover/index.js";
+import { sendInviteEmail, smtpReady } from "../mail/index.js";
 import {
   enqueue,
   type JobOutcome,
@@ -74,6 +99,7 @@ export interface Artist {
   stage: string;
   invite_id: string | null;
   review_url: string | null;
+  contacts: string | null;
 }
 
 function setRun(
@@ -249,23 +275,25 @@ registerJob("igsearch", async (runId): Promise<JobOutcome> => {
 
 // ─── 3. Taslak ──────────────────────────────────────────────────────────────
 
-const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-
 /**
- * Kaynaktaki iletişim bilgileri: hesap e-postası, metinlerde geçen
- * e-postalar, site ve sosyal linkler. Yalnız bilgi için (kullanıcı,
- * 2026-10-23); Artelivo'ya gönderilmez.
+ * Kaynaktaki iletişim bilgileri taslak sırasında da eklenir (keşif daha önce
+ * çalıştıysa bulduklarının üstüne). Yalnız bilgi ve e-posta daveti için;
+ * Artelivo'ya gönderilmez (kullanıcı, 2026-10-23).
  */
-function contactsOf(scraped: ScrapedArtist) {
+function mergeSourceContacts(artist: Artist, scraped: ScrapedArtist): void {
   const s = scraped.structured;
+  const row = db.prepare("SELECT contacts FROM artists WHERE id = ?").get(artist.id) as
+    | { contacts: string | null }
+    | undefined;
+  const c = readContacts(row?.contacts, artist.name);
+  const label = sourceOf(artist.source).label;
   const text = [s?.email, s?.about, s?.education, s?.exhibitions, s?.events, scraped.profileText]
     .filter(Boolean)
     .join("\n");
-  const emails = [...new Set((text.match(EMAIL_RE) ?? []).map((e) => e.toLowerCase()))].filter(
-    (e) => !/\.(png|jpe?g|gif|webp)$/.test(e) && !/saatchiart\.com$/.test(e),
-  );
-  const contacts = { emails, website: s?.website ?? null, socials: s?.socials ?? [] };
-  return emails.length || contacts.website || contacts.socials.length ? contacts : null;
+  for (const e of extractEmails(text)) addEmail(c, e, label, artist.name);
+  for (const url of [s?.website, ...(s?.socials ?? []).map((l) => l.url)])
+    if (url) addLink(c, url, label);
+  saveContacts(artist.id, c);
 }
 
 registerJob("draft", async (artistId) => {
@@ -283,8 +311,8 @@ registerJob("draft", async (artistId) => {
       page,
       artist.source_url,
     );
-    const contacts = contactsOf(scraped);
-    setStage(artistId, "extracting", { contacts: contacts ? JSON.stringify(contacts) : null });
+    mergeSourceContacts(artist, scraped);
+    setStage(artistId, "extracting");
 
     const request = extractionRequest({
       scraped,
@@ -526,7 +554,11 @@ function scheduleNextDm(minSec: number, maxSec: number): void {
   ).run(NEXT_DM_KEY, String(at));
 }
 
-registerJob("dm", async (artistId): Promise<JobOutcome> => {
+/**
+ * Davet mesajını gönderir. Instagram'da "Mesaj" düğmesi yoksa Threads'ten
+ * denenir (kullanıcı, 2026-10-23); ikisi aynı günlük sınırı ve beklemeyi paylaşır.
+ */
+async function deliver(artistId: number, via: "instagram" | "threads"): Promise<JobOutcome> {
   const settings = getSettings();
   const artist = db
     .prepare("SELECT * FROM artists WHERE id = ?")
@@ -569,11 +601,12 @@ registerJob("dm", async (artistId): Promise<JobOutcome> => {
     if (!text.includes(link.claimUrl)) text = `${text.trim()}\n\n${link.claimUrl}`;
     const page = await workTab();
     // Her DENEME günlük sınırdan düşer — başarısızlar da Instagram'a gider.
-    logEvent("ig_dm", { artistId });
-    await sendDm(page, handleOf(artist.instagram_url), text);
+    logEvent("ig_dm", via === "threads" ? { artistId, via } : { artistId });
+    if (via === "threads") await sendThreadsDm(page, threadsHandle(artist), text);
+    else await sendDm(page, handleOf(artist.instagram_url), text);
     db.prepare(
-      "UPDATE dm_messages SET status = 'sent', sent_at = datetime('now'), error = NULL WHERE artist_id = ?",
-    ).run(artistId);
+      "UPDATE dm_messages SET status = 'sent', sent_at = datetime('now'), error = NULL, via = ? WHERE artist_id = ?",
+    ).run(via, artistId);
     setStage(artistId, "dm_sent", { error: null });
   } catch (error) {
     const text = error instanceof Error ? error.message : String(error);
@@ -594,14 +627,222 @@ registerJob("dm", async (artistId): Promise<JobOutcome> => {
       ).run(text, artistId);
       return { deferUntil: tomorrowMorning() };
     }
+    if (via === "instagram" && error instanceof DmClosedError) {
+      // Instagram'da mesaja kapalı: Threads'ten denenir (mesaj gitmedi).
+      db.prepare(
+        "UPDATE dm_messages SET status = 'waiting', error = ? WHERE artist_id = ?",
+      ).run(`Instagram: ${text} → Threads'ten denenecek.`, artistId);
+      enqueue("threads", artistId);
+      return;
+    }
     db.prepare(
       "UPDATE dm_messages SET status = ?, error = ? WHERE artist_id = ?",
-    ).run(error instanceof DmUnverifiedError ? "unverified" : "failed", text, artistId);
+    ).run(
+      error instanceof DmUnverifiedError ? "unverified" : "failed",
+      via === "threads" ? `Instagram'da mesaja kapalı · Threads: ${text}` : text,
+      artistId,
+    );
     throw error;
   } finally {
     // Başarısız denemeden sonra da bekle: art arda hızlı denemeler Instagram'ı
     // kızdırır. İş hemen biter; sıradaki DM bu süre dolunca başlar.
     scheduleNextDm(settings.igDmDelayMin, settings.igDmDelayMax);
+  }
+}
+
+registerJob("dm", (artistId) => deliver(artistId, "instagram"));
+registerJob("threads", (artistId) => deliver(artistId, "threads"));
+
+/** Threads kullanıcı adı: keşifte bulunan Threads linki, yoksa Instagram'ınki (aynı hesap). */
+function threadsHandle(artist: Artist): string {
+  const link = readContacts(artist.contacts, artist.name).links.find((l) => l.label === "Threads");
+  return (link && /\/@([A-Za-z0-9._]+)/.exec(link.url)?.[1]) || handleOf(artist.instagram_url);
+}
+
+// ─── 4b. Bağlantı keşfi ─────────────────────────────────────────────────────
+// Instagram onayından sonra (kullanıcı, 2026-10-23): kaynak profili, Instagram
+// bio'su ve oradan gidilen sayfalarda e-posta ve link arar (src/discover).
+
+registerJob("discover", async (artistId) => {
+  const artist = db
+    .prepare("SELECT * FROM artists WHERE id = ?")
+    .get(artistId) as Artist | undefined;
+  if (!artist) return;
+  const c = readContacts(artist.contacts, artist.name);
+  const page = await workTab();
+  const adapter = sourceOf(artist.source);
+  if (!c.sourceChecked && adapter.contactInfo) {
+    const info = await adapter.contactInfo(page, artist.source_url).catch(() => null);
+    if (info) {
+      if (info.email) addEmail(c, info.email, adapter.label, artist.name);
+      for (const e of extractEmails(info.text)) addEmail(c, e, adapter.label, artist.name);
+      for (const url of info.links) addLink(c, url, adapter.label);
+    }
+    c.sourceChecked = true;
+  }
+  if (!c.igChecked) {
+    // Onay penceresinde okunamadıysa (eski onaylar): profil bir kez açılır.
+    await randomPause(3, 8);
+    try {
+      const info = await visitProfileInfo(page, handleOf(artist.instagram_url));
+      if (info) applyIgInfo(c, info, artist.name);
+    } catch (error) {
+      if (error instanceof InstagramBlockedError) {
+        pauseQueue(true);
+        logEvent("ig_blocked", error.message);
+        notify("Artelivo Davet", "Instagram engel/doğrulama gösterdi — kuyruk durduruldu.");
+      }
+      throw error;
+    }
+    c.igChecked = true;
+  }
+  saveContacts(artistId, c);
+  const ident = [
+    ...nameTokens(artist.name),
+    handleOf(artist.instagram_url),
+    ...c.links.filter((l) => l.label === "Threads").map((l) => /@([\w.]+)/.exec(l.url)?.[1] ?? ""),
+  ].filter(Boolean);
+  // İki tur: siteler/link sayfaları taranır, sonra bulunan platform profilleri
+  // incelenir; platformda yeni bir site çıkarsa ikinci turda o da taranır.
+  const crawled = new Set<string>();
+  const inspected = new Set<string>();
+  let pages = 0;
+  let fbAllowed = true;
+  for (let round = 0; round < 2; round++) {
+    const seeds = c.links.map((l) => l.url).filter((u) => !recordOnly(u) && !crawled.has(urlKey(u)));
+    for (const u of seeds) crawled.add(urlKey(u));
+    if (seeds.length && pages < MAX_PAGES) {
+      const found = await crawl(seeds, workTab, ident, MAX_PAGES - pages);
+      pages += found.pages;
+      for (const e of found.emails) addEmail(c, e.value, e.from, artist.name);
+      for (const l of found.links) addLink(c, l.url, l.from);
+    }
+    // Bu turda açılan ya da bilerek açılmayan siteler sonraki turda yeniden taranmaz.
+    for (const l of c.links) if (!recordOnly(l.url)) crawled.add(urlKey(l.url));
+    const platforms = c.links.filter(
+      (l) => recordOnly(l.url) && !notInspectable(l.url) && !inspected.has(urlKey(l.url)),
+    );
+    if (!platforms.length && round > 0) break;
+    for (const l of platforms.slice(0, 6)) {
+      inspected.add(urlKey(l.url));
+      if (l.label === "Facebook") {
+        if (!fbAllowed) continue;
+        const fb = await readFacebookContact(page, l.url).catch(() => null);
+        pages += 2;
+        if (fb?.loginWall) {
+          fbAllowed = false;
+          logEvent("facebook_login_needed", { artistId });
+          continue;
+        }
+        for (const e of fb?.emails ?? []) addEmail(c, e, "Facebook", artist.name);
+        for (const u of fb?.links ?? []) addLink(c, u, "Facebook");
+        await randomPause(2, 5);
+        continue;
+      }
+      const res =
+        l.label === "Pinterest"
+          ? await readPinterest(l.url).catch(() => null)
+          : await readPlatformPage(l.url, workTab, ident).catch(() => null);
+      pages++;
+      for (const e of res?.emails ?? []) addEmail(c, e, l.label, artist.name);
+      for (const ph of res?.phones ?? []) addPhone(c, ph, l.label);
+      for (const u of res?.links ?? []) addLink(c, u, l.label);
+    }
+  }
+  c.discoveredAt = new Date().toISOString();
+  c.pages = pages;
+  saveContacts(artistId, c);
+  logEvent("discover_done", { artistId, emails: c.emails.length, links: c.links.length });
+  // Mesajı gönderilmek üzere seçilmişse e-posta da gider (kullanıcı: "e-posta
+  // varsa her halükarda").
+  const dm = db.prepare("SELECT status FROM dm_messages WHERE artist_id = ?").get(artistId) as
+    | { status: string }
+    | undefined;
+  if (dm && dm.status !== "draft") queueEmail(artistId);
+});
+
+// ─── 4c. Davet e-postası ────────────────────────────────────────────────────
+// E-posta bulunduysa DM'e EK olarak (kullanıcı, 2026-10-23); metin DM'in
+// aynısı, link gönderimde yeniden doğrulanır. Tek adres: bestEmail.
+
+/**
+ * Sanatçının e-postası varsa ve henüz gitmediyse davet e-postasını sıraya
+ * koyar. Mesajı hazır olmalı (metin DM'den gelir).
+ */
+export function queueEmail(artistId: number): boolean {
+  const artist = db
+    .prepare("SELECT * FROM artists WHERE id = ?")
+    .get(artistId) as Artist | undefined;
+  const dm = db.prepare("SELECT status FROM dm_messages WHERE artist_id = ?").get(artistId);
+  if (!artist?.invite_id || !dm) return false;
+  const best = bestEmail(readContacts(artist.contacts, artist.name));
+  if (!best) return false;
+  const row = db
+    .prepare("SELECT status FROM email_messages WHERE artist_id = ?")
+    .get(artistId) as { status: string } | undefined;
+  if (row && ["sent", "sending", "unverified"].includes(row.status)) return false;
+  db.prepare(
+    `INSERT INTO email_messages (artist_id, to_addr, status) VALUES (?, ?, 'waiting')
+     ON CONFLICT(artist_id) DO UPDATE SET to_addr = excluded.to_addr, status = 'waiting',
+       error = NULL, updated_at = datetime('now')`,
+  ).run(artistId, best.value);
+  enqueue("email", artistId);
+  return true;
+}
+
+const NEXT_EMAIL_KEY = "nextEmailAt";
+
+registerJob("email", async (artistId): Promise<JobOutcome> => {
+  const settings = getSettings();
+  const artist = db
+    .prepare("SELECT * FROM artists WHERE id = ?")
+    .get(artistId) as Artist | undefined;
+  const row = db
+    .prepare("SELECT * FROM email_messages WHERE artist_id = ?")
+    .get(artistId) as { to_addr: string; status: string } | undefined;
+  const message = db
+    .prepare("SELECT text FROM dm_messages WHERE artist_id = ?")
+    .get(artistId) as { text: string } | undefined;
+  if (!artist?.invite_id || !row || !message || row.status === "sent") return;
+  const setRow = (status: string, error: string | null) =>
+    db.prepare(
+      "UPDATE email_messages SET status = ?, error = ?, updated_at = datetime('now') WHERE artist_id = ?",
+    ).run(status, error, artistId);
+  // Uygulama gönderirken kapandıysa: gitmiş olabilir, kendiliğinden yeniden gönderme.
+  if (row.status === "sending" || row.status === "unverified") {
+    setRow("unverified", "Gönderim yarıda kaldı — info@artelivo.com Gönderilmiş klasörüne bak.");
+    return;
+  }
+  if (!smtpReady()) throw new Error("E-posta ayarları yok (.env SMTP_*).");
+  if (countToday("email_sent") >= settings.emailPerDay) {
+    setRow("waiting", "Günlük e-posta sınırı doldu — yarın sabah gönderilecek.");
+    return { deferUntil: tomorrowMorning() };
+  }
+  const waitUntil = Number(
+    (db.prepare("SELECT value FROM settings WHERE key = ?").get(NEXT_EMAIL_KEY) as { value: string } | undefined)
+      ?.value ?? 0,
+  );
+  if (waitUntil > Date.now()) return { deferUntil: new Date(waitUntil) };
+  setRow("sending", null);
+  try {
+    const link = await artelivo.link(artist.invite_id);
+    let text = message.text.split(LINK_PLACEHOLDER).join(link.claimUrl);
+    if (!text.includes(link.claimUrl)) text = `${text.trim()}\n\n${link.claimUrl}`;
+    await sendInviteEmail(row.to_addr, text, artist.dm_lang === "en" ? "en" : "tr");
+    db.prepare(
+      "UPDATE email_messages SET status = 'sent', error = NULL, sent_at = datetime('now'), updated_at = datetime('now') WHERE artist_id = ?",
+    ).run(artistId);
+    logEvent("email_sent", { artistId });
+  } catch (error) {
+    setRow("failed", error instanceof Error ? error.message : String(error));
+    throw error;
+  } finally {
+    const lo = Math.max(0, Math.min(settings.emailDelayMin, settings.emailDelayMax));
+    const hi = Math.max(settings.emailDelayMin, settings.emailDelayMax);
+    db.prepare(
+      `INSERT INTO settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(NEXT_EMAIL_KEY, String(Date.now() + Math.round((lo + Math.random() * (hi - lo)) * 1000)));
   }
 });
 

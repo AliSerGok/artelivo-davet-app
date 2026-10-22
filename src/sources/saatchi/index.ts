@@ -346,8 +346,24 @@ async function scrapeStructured(page: Page, profileUrl: string): Promise<Scraped
   };
 }
 
+async function contactInfo(page: Page, profileUrl: string) {
+  const id = profileIdOf(profileUrl);
+  if (!id) return null;
+  await page.goto(`${BASE}/account/artworks/${id}`, { waitUntil: "domcontentloaded" });
+  await settle(page);
+  const acc = await readAccount(page);
+  if (!acc) return null;
+  const p = profileFromAccount(acc);
+  return {
+    email: p.email,
+    text: [p.about, p.education, p.exhibitions, p.events].filter(Boolean).join("\n"),
+    links: [p.website, p.instagram, ...p.socials.map((l) => l.url)].filter((x): x is string => Boolean(x)),
+  };
+}
+
 export const saatchi: SourceAdapter = {
   id: "saatchi",
+  contactInfo,
   label: "Saatchi Art",
   categories: [
     { value: "paintings", label: "Resim (Paintings)" },

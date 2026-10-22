@@ -49,6 +49,18 @@ export const config = {
     /** Yalnız bu masada: Instagram davetinin sahiplenme linki. */
     linkKey: process.env.ARTIST_INVITE_LINK_KEY || "",
   },
+  /**
+   * E-posta daveti (kullanıcı, 2026-10-23): artemiz'in SMTP'si, gönderen
+   * SMTP_USER (info@artelivo.com); EMAIL_FROM yalnız görünen ad.
+   */
+  smtp: {
+    host: process.env.SMTP_HOST || "",
+    port: Number(process.env.SMTP_PORT || 465),
+    secure: (process.env.SMTP_SECURE || "true") === "true",
+    user: process.env.SMTP_USER || "",
+    password: process.env.SMTP_PASSWORD || "",
+    fromName: process.env.EMAIL_FROM || "Artelivo",
+  },
   /** Claude Code (Max planı): komut ve model takma adı. */
   claudeBin: process.env.CLAUDE_BIN || "claude",
   claudeModel: process.env.CLAUDE_MODEL || "opus",
@@ -70,5 +82,6 @@ export function missingConfig(): string[] {
     missing.push("Claude Code (claude komutu)");
   }
   if (!existsSync(config.mappingFile)) missing.push("MAPPING_FILE");
+  if (!config.smtp.host || !config.smtp.user || !config.smtp.password) missing.push("SMTP_* (e-posta)");
   return missing;
 }

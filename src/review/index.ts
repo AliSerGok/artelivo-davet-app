@@ -2,7 +2,11 @@ import { randomBytes } from "node:crypto";
 
 import type { Page } from "playwright";
 
+import { readContacts, saveContacts } from "../contacts/index.js";
 import { db, logEvent, markSeen } from "../db/index.js";
+import { applyIgInfo } from "../discover/index.js";
+import { readProfileInfo } from "../instagram/index.js";
+import { enqueue } from "../jobs/queue.js";
 import { openSplit, type SplitView } from "../lib/browser.js";
 
 // ============================================================================
@@ -408,9 +412,16 @@ async function decide(
   const run = db
     .prepare("SELECT category, country FROM runs WHERE id = ?")
     .get(c.run_id) as { category: string; country: string } | undefined;
+  // Bağlantı keşfi için (kullanıcı, 2026-10-23): sağda açık olan profilin bio'su
+  // ve linkleri — sayfa zaten açık, Instagram'a ek istek gitmez.
+  const igInfo =
+    approved && handle && s.view && handleFromUrl(s.view.right.url()) === handle.toLowerCase()
+      ? await readProfileInfo(s.view.right)
+      : null;
+  let artistId = 0;
   db.transaction(() => {
     if (approved && handle) {
-      db.prepare(
+      artistId = Number(db.prepare(
         `INSERT INTO artists (source, name, source_url, instagram_url, category, country) VALUES (?, ?, ?, ?, ?, ?)`,
       ).run(
         c.source,
@@ -419,7 +430,7 @@ async function decide(
         igUrl(handle),
         run?.category ?? null,
         run?.country ?? "TR",
-      );
+      ).lastInsertRowid);
     }
     // Karar verildi: aday satırları silinir, yalnız özet kalır (KVKK).
     markSeen(c.source, c.source_url, approved ? "approved" : "rejected");
@@ -428,6 +439,14 @@ async function decide(
   logEvent(approved ? "review_approved" : "review_rejected", {
     candidate: c.id,
   });
+  if (artistId) {
+    if (igInfo) {
+      const contacts = readContacts(null, c.name);
+      applyIgInfo(contacts, igInfo, c.name);
+      saveContacts(artistId, contacts);
+    }
+    enqueue("discover", artistId);
+  }
   const remaining = (
     db
       .prepare(

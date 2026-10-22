@@ -144,6 +144,21 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE artists ADD COLUMN contacts TEXT;
   `,
+  // 2026-10-23: e-posta varsa DM'e ek olarak davet e-postası (kullanıcı).
+  `
+  CREATE TABLE email_messages (
+    artist_id  INTEGER PRIMARY KEY REFERENCES artists(id) ON DELETE CASCADE,
+    to_addr    TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'waiting',
+    error      TEXT,
+    sent_at    TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
+  // 2026-10-23: Instagram'da mesaja kapalıysa Threads'ten (kullanıcı); hangi kanaldan gitti.
+  `
+  ALTER TABLE dm_messages ADD COLUMN via TEXT;
+  `,
 ];
 
 function migrate(): void {
@@ -276,6 +291,10 @@ export const DEFAULT_SETTINGS = {
   /** Saatchi'de eser sayısı aralığı. */
   minWorks: 10,
   maxWorks: 30,
+  /** Günde en fazla davet e-postası ve aralarındaki bekleme (sn). */
+  emailPerDay: 40,
+  emailDelayMin: 60,
+  emailDelayMax: 180,
   /** "Test DM'i" için kendi Instagram kullanıcı adın. */
   testHandle: "",
 } as const;

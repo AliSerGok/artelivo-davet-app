@@ -35,6 +35,11 @@ penceresini kapatmak uygulamayı kapatır.
    ayrıca elle kullanıcı adı girme. Aday yoksa sağ pencerede Instagram araması adla hazır
    açılır: doğru profile tıkla → **"Sağdaki profili kullan (U)"**. Karar verince sıradakinin
    pencereleri açılır.
+   Onayda sağdaki Instagram profilinin bio'su ve linkleri okunur ve sanatçı için
+   **bağlantı keşfi** sıraya girer: Saatchi profili, Instagram bio'su ve oradaki linkler
+   (link sayfaları, kişisel site ve iletişim/hakkında sayfaları; sanatçı başına en çok
+   15 sayfa) taranır, e-postalar ve linkler toplanır. Sonuç Sanatçılar'da her satırın
+   **🔗 Bağlantılar** kutusunda; eski sanatçılar için seç → **"Bağlantıları tara"**.
 3. **Sanatçılar** → seç → **"Seçililerin taslağını oluştur"**. Taslaklar sırayla, tek tek
    oluşur (Saatchi'deki her şey MAPPING.md kurallarıyla alınır).
 4. **"Seçililerin önizlemelerini aç"** → ana tarayıcında (Artelivo'ya yönetici girişli)
@@ -45,6 +50,13 @@ penceresini kapatmak uygulamayı kapatır.
    mesajları göndermeye yakın hazırla). Elle düzenlerken linki silersen gönderimde sona eklenir.
 6. **"Seçilileri gönder"** → her biri için link alınır, Instagram'da profile gidilip DM
    gönderilir; günlük sınır ve bekleme süreleriyle, tek tek.
+   - Instagram'da "Mesaj" düğmesi yoksa (gizli/mesaja kapalı) aynı mesaj **Threads**'ten
+     denenir. Uygulamanın penceresinde Threads'e bir kez girilmeli: Ayarlar →
+     **"Threads'e giriş (bir kez)"**.
+   - Sanatçının **güvenilir** bir e-postası bulunduysa (adını taşıyan, kendi sitesindeki ya
+     da kendi yazdığı yerdeki) aynı mesaj **info@artelivo.com**'dan e-postayla da gider.
+     Mesaj gönderildikten sonra bulunan e-posta da kendiliğinden gider. Mağaza/galeri
+     sayfasındaki başka adreslere gitmez; onlar yalnız Bağlantılar'da görünür.
 
 Sanatçı linki açınca e-postasını yazar, 6 haneli kodla doğrular ve profili alır — ya da
 "istemiyorum" der, taslak silinir ve bir daha yazılmaz. Durumlar ("Profili aldı",
@@ -54,7 +66,8 @@ Sanatçı linki açınca e-postasını yazar, 6 haneli kodla doğrular ve profil
 
 - Taranan herkes yalnız profil adresinin **özeti** olarak tutulur (`seen`); ad ve link
   yalnız sen karar verene kadar durur. Reddettiğin aday silinir, bir daha taranmaz.
-- Instagram hız sınırları **Ayarlar**'da. Sınır dolunca iş ertesi sabaha kalır.
+- Instagram (Threads dahil) ve e-posta hız sınırları **Ayarlar**'da. Sınır dolunca iş ertesi sabaha kalır.
+- E-posta için `.env`'de `SMTP_*` (artemiz'deki ile aynı); "Bağlantıları dene" SMTP girişini de dener.
 - `ARTIST_INVITE_LINK_KEY` yalnız bu bilgisayarda durur.
 
 ## Dosyalar

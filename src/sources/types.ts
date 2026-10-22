@@ -133,4 +133,12 @@ export interface SourceAdapter {
     country: Country
   ): Promise<ProfileSummary>;
   scrapeAll(page: Page, profileUrl: string): Promise<ScrapedArtist>;
+  /**
+   * Bağlantı keşfi için iletişim bilgisi: hesap e-postası, serbest metin
+   * (hakkında vb., içindeki e-postalar için) ve linkler. Tek sayfa okur.
+   */
+  contactInfo?(
+    page: Page,
+    profileUrl: string,
+  ): Promise<{ email: string | null; text: string; links: string[] } | null>;
 }

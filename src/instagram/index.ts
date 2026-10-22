@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 
 import { sleep, snapshot } from "../lib/browser.js";
 
@@ -28,6 +28,12 @@ export class InstagramBlockedError extends Error {
   /** Engel, Enter'a basıldıktan SONRA çıktı: mesaj gitmiş olabilir. */
   maybeSent = false;
 }
+
+/**
+ * Profilde "Mesaj" düğmesi yok (gizli hesap ya da mesaja kapalı): mesaj
+ * GİTMEDİ; Threads'ten denenir (kullanıcı, 2026-10-23).
+ */
+export class DmClosedError extends Error {}
 
 const BLOCK_URL = /\/(challenge|accounts\/login|accounts\/suspended|checkpoint)/;
 
@@ -129,7 +135,7 @@ export async function sendDm(
     .first();
   if ((await messageButton.count()) === 0) {
     const shot = await snapshot(page, "no-message-button");
-    throw new Error(
+    throw new DmClosedError(
       `"Mesaj" düğmesi yok (gizli hesap ya da mesaja kapalı). Ekran: ${shot}`,
     );
   }
@@ -144,6 +150,14 @@ export async function sendDm(
     .getByRole("button", { name: /^(Şimdi Değil|Not Now)$/i })
     .click({ timeout: 1500 })
     .catch(() => {});
+  await typeAndVerify(page, box, text);
+}
+
+/**
+ * Metni parça parça yazıp gönderir; her parçanın kutudan çıktığını ve
+ * sohbette göründüğünü doğrular (Instagram ve Threads aynı Meta bileşeni).
+ */
+async function typeAndVerify(page: Page, box: Locator, text: string): Promise<void> {
   const parts = splitForDm(text);
   for (const [partIndex, part] of parts.entries()) {
     await box.click();
@@ -190,4 +204,112 @@ export async function sendDm(
     }
     if (partIndex < parts.length - 1) await sleep(1500 + Math.random() * 2000);
   }
+}
+
+// ─── Profil bilgisi (bağlantı keşfi, kullanıcı 2026-10-23) ────────────────────
+
+export interface ProfileInfo {
+  /** Profil başlığının görünen metni (ad, kategori, bio). */
+  bio: string;
+  /** Bio'daki dış linkler (Instagram'ın l.instagram.com sarmalı açılmış). */
+  links: string[];
+}
+
+/**
+ * AÇIK bir profil sayfasından okur; profil değilse null. Instagram'a istek
+ * atmaz; yalnız sayfadaki "more" (bio'yu açar) ve "… and N more" (link
+ * penceresi) düğmelerine basar, pencereyi kapatır (2026-10-23 bakıldı).
+ */
+export async function readProfileInfo(page: Page): Promise<ProfileInfo | null> {
+  if (!/instagram\.com\/[^/?#]+\/?(\?|#|$)/.test(page.url())) return null;
+  const header = page.locator("main header").first();
+  if ((await header.count()) === 0) return null;
+  // Kısaltılmış bio.
+  await header
+    .locator('[role="button"]')
+    .filter({ hasText: /^(more|devamı|daha fazla)$/i })
+    .first()
+    .click({ timeout: 1500 })
+    .catch(() => {});
+  const links = new Set<string>();
+  const collect = async (scope: string) => {
+    const hrefs = await page
+      .locator(`${scope} a[href]`)
+      .evaluateAll((as) => as.map((a) => (a as HTMLAnchorElement).href))
+      .catch(() => [] as string[]);
+    for (const href of hrefs) {
+      try {
+        const u = new URL(href);
+        if (u.hostname === "l.instagram.com") links.add(u.searchParams.get("u") ?? "");
+        else if (!u.hostname.endsWith("instagram.com")) links.add(href);
+      } catch {
+        // bozuk adres
+      }
+    }
+  };
+  await collect("main header");
+  // Birden çok link: "Ad and 2 more" düğmesi bir pencere açar.
+  const many = header.locator("button").filter({ hasText: /\b(and|ve) \d+ (more|diğer|tane daha|daha)/i }).first();
+  if ((await many.count()) > 0) {
+    await many.click({ timeout: 2000 }).catch(() => {});
+    const dialog = page.locator('[role="dialog"]').last();
+    await dialog.waitFor({ state: "visible", timeout: 4000 }).catch(() => {});
+    await collect('[role="dialog"]');
+    // Linkin görünen metni (sarmal açılamazsa): "linktr.ee/ad"
+    const lines = await dialog.innerText({ timeout: 1000 }).catch(() => "");
+    for (const line of lines.split("\n")) if (/^[\w.-]+\.[a-z]{2,}(\/\S*)?$/i.test(line.trim())) links.add(line.trim());
+    await page.keyboard.press("Escape").catch(() => {});
+    await sleep(500);
+  }
+  const text = (await header.innerText({ timeout: 2000 }).catch(() => "")).split("\n");
+  // Bio, "Follow/Takip et" düğmelerinden öncesidir (sonrası öne çıkanlar).
+  const stop = text.findIndex((l) => /^(Follow|Following|Takip et|Takiptesin|Message|Mesaj gönder|Mesaj)$/i.test(l.trim()));
+  const bio = (stop > 0 ? text.slice(0, stop) : text)
+    .filter((l) => !/(takip ediyor|followed by)/i.test(l))
+    .join("\n")
+    .trim()
+    .slice(0, 1500);
+  return { bio, links: [...links].filter(Boolean) };
+}
+
+/** Keşifte: profili bir kez açıp okur (DM'deki profil ziyaretiyle aynı yol). */
+export async function visitProfileInfo(page: Page, handle: string): Promise<ProfileInfo | null> {
+  await ensureOnInstagram(page);
+  await page.goto(`${IG}/${handle}/`, { waitUntil: "domcontentloaded" });
+  await sleep(3000);
+  await assertNotBlocked(page, "profil okunurken");
+  return readProfileInfo(page);
+}
+
+// ─── Threads (Instagram'dan gitmeyen mesaj, kullanıcı 2026-10-23) ─────────────
+// threads.com/@kullanıcı → "Message" → threads.com/messages/t/… sohbeti;
+// yazı kutusu Instagram'ınkiyle aynı. Takipleşilmeyen kişiye "mesaj isteği"
+// gider ve kabul edilene kadar en çok 3 mesaj atılabilir (2026-10-23 bakıldı).
+// Oturum: uygulamanın Chrome profilinde Threads'e bir kez girilir.
+
+const THREADS = "https://www.threads.com";
+
+export async function sendThreadsDm(page: Page, handle: string, text: string): Promise<void> {
+  if (splitForDm(text).length > 3) throw new Error("Mesaj Threads'in 3 mesajlık istek sınırına sığmıyor.");
+  await page.goto(`${THREADS}/@${handle}`, { waitUntil: "domcontentloaded" });
+  await sleep(3000);
+  if (/\/login/.test(page.url())) {
+    throw new Error('Threads oturumu yok — Ayarlar → "Threads\'e giriş" ile bir kez giriş yap.');
+  }
+  await assertNotBlocked(page, "Threads profili açılırken");
+  if (await page.getByText(/^(Profile isn't available|Profil kullanılamıyor|This profile is private)/i).count()) {
+    throw new DmClosedError(`Threads'te @${handle} profili yok ya da açık değil.`);
+  }
+  const messageButton = page
+    .getByRole("button", { name: /^(Message|Mesaj|Mesaj gönder)$/i })
+    .first();
+  if ((await messageButton.count()) === 0) {
+    const shot = await snapshot(page, "threads-no-message-button");
+    throw new DmClosedError(`Threads'te "Message" düğmesi yok (hesap yok ya da mesaja kapalı). Ekran: ${shot}`);
+  }
+  await messageButton.click();
+  await page.waitForURL(/\/messages\//, { timeout: 15000 }).catch(() => {});
+  const box = page.locator('div[role="textbox"][contenteditable="true"]').last();
+  await box.waitFor({ state: "visible", timeout: 20000 });
+  await typeAndVerify(page, box, text);
 }

@@ -18,8 +18,13 @@ Yerel masaüstü aracı (Node 24 + TypeScript, `tsx` ile çalışır, build yok)
   (2026-10-21; ülke yetmez — dil `artists.dm_lang`, taslakta Claude tahmin eder, Mesajlar'dan değişir;
   `TEMPLATE_EN` çevirisi); kaynak ve
   "istemezseniz silinir" bilgisi her mesajda.
-- Kaynaktaki iletişim bilgileri (e-posta, site, sosyal) taslakta `artists.contacts`'a YALNIZ bilgi için
-  yazılır (kullanıcı 2026-10-23); Artelivo'ya gitmez, taslağın `email` alanı silinir.
+- İletişim bilgileri `artists.contacts` (JSON, `src/contacts`); Artelivo'ya gitmez, taslağın `email`
+  alanı silinir. Instagram onayından sonra **bağlantı keşfi** (`discover` işi, `src/discover`): Saatchi +
+  Instagram bio'su (onayda açık sayfadan okunur) + linkler; derinlik 2, en çok 15 sayfa (kullanıcı 2026-10-23).
+- Kanallar (kullanıcı 2026-10-23): Instagram DM; "Mesaj" düğmesi yoksa **Threads** (aynı sınır/bekleme);
+  güvenilir e-posta varsa **her durumda** davet e-postası da (`email` işi, info@artelivo.com, artemiz SMTP'si,
+  metin DM'in aynısı). Pinterest ve Saatchi mesaj kanalı DEĞİL. Davetler Instagram kanalında kalır
+  (artemiz'in e-posta kanalı linki DM'e vermez).
 - Taslak alan kuralları artemiz'deki `apps/web/agent/artist-invites/MAPPING.md`'den OKUNUR (kopya yok).
 
 ## Yapı

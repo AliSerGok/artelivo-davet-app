@@ -20,9 +20,12 @@ import {
   type Artist,
   closedCounts,
   prepareDm,
+  queueEmail,
   setStage,
   syncWithArtelivo,
 } from "./jobs/handlers.js";
+import { readContacts, trustedEmail, urlKey } from "./contacts/index.js";
+import { verifySmtp } from "./mail/index.js";
 import {
   cancelJob,
   enqueue,
@@ -253,6 +256,20 @@ function describeJob(job: Job): { title: string; detail: string; since: string |
       since,
     };
   }
+  if (job.kind === "discover") {
+    return {
+      title: `Bağlantılar taranıyor: ${artistName(job.ref_id)}`,
+      detail: "Saatchi, Instagram bio'su ve oradaki linkler (en çok 15 sayfa)",
+      since,
+    };
+  }
+  if (job.kind === "email") {
+    const to = one<{ to_addr: string }>("SELECT to_addr FROM email_messages WHERE artist_id = ?", job.ref_id)?.to_addr;
+    return { title: `Davet e-postası: ${artistName(job.ref_id)}`, detail: to ? `→ ${to}` : "", since };
+  }
+  if (job.kind === "threads") {
+    return { title: `Threads mesajı: ${artistName(job.ref_id)}`, detail: "Instagram'dan gitmedi, Threads deneniyor", since };
+  }
   if (job.kind === "dm") {
     return {
       title: `Instagram mesajı: ${artistName(job.ref_id)}`,
@@ -269,6 +286,9 @@ const JOB_LABEL: Record<string, string> = {
   draft: "Taslak",
   dm: "Instagram mesajı",
   sync: "Durum yenileme",
+  discover: "Bağlantı keşfi",
+  email: "Davet e-postası",
+  threads: "Threads mesajı",
 };
 
 /** Olay → bildirim. Adlar olay kaydında yok (KVKK); o an tablolardan okunur. */
@@ -295,7 +315,20 @@ function toastOf(
       const n = countOf("SELECT COUNT(*) AS n FROM candidates WHERE run_id = ? AND status = 'ready'", ref);
       return { title: `Onaya hazır: ${n} aday`, text: `Turlar → tur #${ref} → "Onaya başla"`, tone: "ok" };
     }
-    if (detail.job === "dm") {
+    if (detail.job === "email") {
+      const to = one<{ to_addr: string; status: string }>("SELECT to_addr, status FROM email_messages WHERE artist_id = ?", ref);
+      if (to?.status === "sent") return { title: `E-posta gönderildi: ${artistName(ref)}`, text: to.to_addr, tone: "ok" };
+      return null;
+    }
+    if (detail.job === "discover") {
+      const c = readContacts(one<{ contacts: string | null }>("SELECT contacts FROM artists WHERE id = ?", ref)?.contacts);
+      return {
+        title: `Bağlantılar tarandı: ${artistName(ref)}`,
+        text: `${c.emails.length} e-posta · ${c.links.length} link · ${c.pages} sayfa`,
+        tone: c.emails.length ? "ok" : "info",
+      };
+    }
+    if (detail.job === "dm" || detail.job === "threads") {
       const status = one<{ status: string }>("SELECT status FROM dm_messages WHERE artist_id = ?", ref)?.status;
       if (status === "sent") return { title: `Mesaj gönderildi: ${artistName(ref)}`, text: "", tone: "ok" };
       if (status === "unverified")
@@ -305,7 +338,7 @@ function toastOf(
     return null;
   }
   if (kind === "job_failed") {
-    const who = ["draft", "dm"].includes(String(detail.job)) ? `: ${artistName(ref)}` : ` #${ref}`;
+    const who = ["draft", "dm", "discover", "email", "threads"].includes(String(detail.job)) ? `: ${artistName(ref)}` : ` #${ref}`;
     return {
       title: `${JOB_LABEL[String(detail.job)] ?? "İş"} başarısız${who}`,
       text: String(detail.message ?? "").slice(0, 200),
@@ -706,6 +739,7 @@ app.get("/artists", (c) => {
             ${can("draft") ? html`<button class="primary" formaction="/artists/draft" data-needs-selection data-busy="Sıraya alınıyor">Taslak oluştur</button>` : ""}
             ${can("preview") ? html`<button class="${tab.key === "olusturulan" ? "primary" : "secondary"}" formaction="/artists/open-previews" data-needs-selection data-busy="Açılıyor">Önizlemeleri aç</button>` : ""}
             ${can("dm") ? html`<button class="${tab.key === "onaylanan" ? "primary" : "secondary"}" formaction="/artists/prepare-dm" data-needs-selection data-busy="Claude mesajları yazıyor">Mesaj hazırla</button>` : ""}
+            <button class="secondary" formaction="/artists/discover" data-needs-selection data-busy="Sıraya alınıyor">🔗 Bağlantıları tara</button>
             <span style="margin-left:auto"></span>
             <button class="subtle" formaction="/artists/sync" data-busy="Yenileniyor">↻ Artelivo'dan durumları yenile</button>
           </div>
@@ -776,6 +810,28 @@ app.post("/artists/draft", async (c) => {
     `${queued} taslak sıraya alındı`,
     `Tek tek hazırlanır (kişi başı ~3 dk); üstteki şeritte izle.${skipped ? ` ${skipped} kişinin taslağı zaten vardı.` : ""}`,
   );
+});
+
+app.post("/artists/discover", async (c) => {
+  let n = 0;
+  for (const id of ids(await c.req.parseBody({ all: true }))) {
+    enqueue("discover", id);
+    n++;
+  }
+  return back(
+    c,
+    backPath(c, "/artists"),
+    n ? `${n} sanatçının bağlantıları taranacak` : "Seçim yok",
+    n ? "Kişi başı en çok 15 sayfa; sonuç Bağlantılar kutusunda. Mesajı gönderilmişse ve e-posta bulunursa davet e-postası da gider." : "",
+    n ? "ok" : "info",
+  );
+});
+
+app.post("/messages/:id/email", (c) => {
+  const id = Number(c.req.param("id"));
+  return queueEmail(id)
+    ? back(c, backPath(c, "/messages"), `E-posta sıraya alındı: ${artistName(id)}`)
+    : back(c, backPath(c, "/messages"), "E-posta sıraya alınamadı", "Adres yok ya da zaten gönderildi.", "warn");
 });
 
 app.post("/artists/open-previews", async (c) => {
@@ -965,10 +1021,38 @@ const DM_STATUS: Record<string, { label: string; tone: Tone }> = {
   unverified: { label: "Doğrulanamadı — gitmiş olabilir", tone: "warn" },
 };
 
+/** Mesaj kartında davet e-postasının durumu (adres keşifte bulunduysa). */
+function emailLine(m: {
+  artist_id: number;
+  status: string;
+  name: string;
+  contacts: string | null;
+  email_to: string | null;
+  email_status: string | null;
+  email_error: string | null;
+  email_sent_at: string | null;
+}) {
+  const found = readContacts(m.contacts, m.name).emails;
+  if (!m.email_to && !found.length) return "";
+  const st = m.email_status ? (DM_STATUS[m.email_status] ?? { label: m.email_status, tone: "neutral" as Tone }) : null;
+  const canSend = found.length && !["sent", "sending", "waiting", "unverified"].includes(m.email_status ?? "");
+  return html`<div class="row small">
+    <span>✉ E-posta: <b>${m.email_to ?? found.map((e) => e.value).join(", ")}</b></span>
+    ${st ? badge(st.label, st.tone) : m.status === "draft" ? html`<span class="muted">mesajla birlikte gider</span>` : ""}
+    ${m.email_sent_at ? html`<span class="muted">${m.email_sent_at}</span>` : ""}
+    ${canSend && (m.email_status || m.status !== "draft") ? html`<button class="subtle" form="email_${m.artist_id}" data-busy="Sıraya alınıyor">E-postayı gönder</button>` : ""}
+  </div>
+  ${m.email_error ? html`<div class="note ${m.email_status === "failed" ? "bad" : "warn"}">${m.email_error}</div>` : ""}`;
+}
+
 app.get("/messages", (c) => {
   const rows = db
     .prepare(
-      `SELECT m.*, a.name, a.instagram_url, a.stage, a.dm_lang FROM dm_messages m JOIN artists a ON a.id = m.artist_id ORDER BY m.created_at DESC`,
+      `SELECT m.*, a.name, a.instagram_url, a.stage, a.dm_lang, a.contacts,
+              e.to_addr AS email_to, e.status AS email_status, e.error AS email_error, e.sent_at AS email_sent_at
+         FROM dm_messages m JOIN artists a ON a.id = m.artist_id
+         LEFT JOIN email_messages e ON e.artist_id = m.artist_id
+        ORDER BY m.created_at DESC`,
     )
     .all() as Array<{
     artist_id: number;
@@ -979,6 +1063,12 @@ app.get("/messages", (c) => {
     name: string;
     instagram_url: string;
     dm_lang: string | null;
+    via: string | null;
+    contacts: string | null;
+    email_to: string | null;
+    email_status: string | null;
+    email_error: string | null;
+    email_sent_at: string | null;
   }>;
   const s = getSettings();
   const today = countToday("ig_dm");
@@ -1020,9 +1110,10 @@ app.get("/messages", (c) => {
                       <input type="checkbox" name="ids" value="${m.artist_id}" ${locked ? raw("disabled") : ""} />
                       <b>${m.name}</b> <a class="muted" href="${m.instagram_url}" target="_blank">${handleOf(m.instagram_url)}</a>
                     </label>
-                    <span>${badge(m.dm_lang === "en" ? "İngilizce" : "Türkçe", "neutral")} ${badge(st.label, st.tone)}${m.sent_at ? html` <span class="muted small">${m.sent_at}</span>` : ""}</span>
+                    <span>${badge(m.dm_lang === "en" ? "İngilizce" : "Türkçe", "neutral")} ${badge(st.label, st.tone)}${m.via === "threads" ? html` ${badge("Threads'ten", "info")}` : ""}${m.sent_at ? html` <span class="muted small">${m.sent_at}</span>` : ""}</span>
                   </div>
                   ${m.error ? html`<div class="note bad">${m.error}</div>` : ""}
+                  ${emailLine(m)}
                   ${(() => {
                     const parts = splitForDm(m.text);
                     return html`<div class="muted small">${m.text.length} karakter · Instagram'a ${parts.length} mesaj olarak gider (${parts.map((p) => p.length).join(" + ")}; her biri en çok ${DM_MAX})</div>`;
@@ -1057,7 +1148,8 @@ app.get("/messages", (c) => {
             <form id="lang_${m.artist_id}" method="post" action="/messages/${m.artist_id}/lang"></form>
             <form id="confirm_${m.artist_id}" method="post" action="/messages/${m.artist_id}/confirm-sent"></form>
             <form id="resend_${m.artist_id}" method="post" action="/messages/${m.artist_id}/resend"></form>
-            <form id="unqueue_${m.artist_id}" method="post" action="/messages/${m.artist_id}/unqueue"></form>`,
+            <form id="unqueue_${m.artist_id}" method="post" action="/messages/${m.artist_id}/unqueue"></form>
+            <form id="email_${m.artist_id}" method="post" action="/messages/${m.artist_id}/email"></form>`,
         )}
       `,
     ),
@@ -1097,10 +1189,10 @@ app.post("/messages/:id/resend", (c) => {
 // Sıradaki (henüz gitmemiş) mesajı geri al: düzenlenebilir olur.
 app.post("/messages/:id/unqueue", (c) => {
   const id = Number(c.req.param("id"));
-  if (queueState.current?.kind === "dm" && queueState.current.ref_id === id) {
+  if (["dm", "threads"].includes(queueState.current?.kind ?? "") && queueState.current?.ref_id === id) {
     return back(c, backPath(c, "/messages"), "Şu an gönderiliyor", "Geri alınamaz; bitmesini bekle.", "warn");
   }
-  db.prepare("UPDATE jobs SET status = 'cancelled' WHERE kind = 'dm' AND ref_id = ? AND status = 'queued'").run(id);
+  db.prepare("UPDATE jobs SET status = 'cancelled' WHERE kind IN ('dm','threads') AND ref_id = ? AND status = 'queued'").run(id);
   db.prepare("UPDATE dm_messages SET status = 'draft', error = NULL WHERE artist_id = ? AND status = 'waiting'").run(id);
   return back(c, backPath(c, "/messages"), `Sıradan çıkarıldı: ${artistName(id)}`, "Düzenleyip yeniden gönderebilirsin.", "info");
 });
@@ -1132,18 +1224,21 @@ app.post("/messages/:id/rewrite", async (c) => {
 
 app.post("/messages/send", async (c) => {
   let n = 0;
+  let mails = 0;
   for (const id of ids(await c.req.parseBody({ all: true }))) {
     db.prepare(
       "UPDATE dm_messages SET status = 'waiting', error = NULL WHERE artist_id = ? AND status IN ('draft','failed')",
     ).run(id);
     enqueue("dm", id);
+    // E-posta bulunduysa davet e-postası da (kullanıcı, 2026-10-23).
+    if (queueEmail(id)) mails++;
     n++;
   }
   if (!n) return back(c, backPath(c, "/messages"), "Seçili mesaj yok", "", "info");
   return back(
     c,
     "/messages",
-    `${n} mesaj sıraya alındı`,
+    `${n} mesaj sıraya alındı${mails ? ` · ${mails} e-posta` : ""}`,
     queueState.paused ? "Kuyruk durduruldu — İşler'den sürdürünce gider." : "Sırayla gidecek; her biri bitince haber veririm.",
     queueState.paused ? "warn" : "ok",
   );
@@ -1178,45 +1273,54 @@ const EVENT_LABEL: Record<string, string> = {
   image_upload_failed: "Görsel yüklenemedi",
   profile_unreadable: "Profil okunamadı",
   sync_failed: "Durum yenilenemedi",
+  discover_done: "Bağlantılar tarandı",
+  facebook_login_needed: "Facebook giriş istedi (keşif)",
+  email_sent: "Davet e-postası gönderildi",
 };
 
 /**
- * Sanatçının tüm bağlantıları tek açılır kutuda: kaynak, Instagram, önizleme
- * ve kaynaktaki iletişim bilgileri (yalnız bilgi; taslakta toplanır).
+ * Sanatçının tüm bağlantıları tek açılır kutuda: kaynak, Instagram, önizleme,
+ * keşifte bulunan e-postalar ve linkler (nerede bulundukları ile).
  */
 function linksView(a: {
   id: number;
+  name: string;
   source: string;
   source_url: string;
   instagram_url: string;
   review_url: string | null;
   contacts: string | null;
 }) {
-  let c: { emails?: string[]; website?: string | null; socials?: Array<{ label: string; url: string }> } = {};
-  try {
-    c = a.contacts ? (JSON.parse(a.contacts) as typeof c) : {};
-  } catch {
-    // bozuk kayıt: yalnız sabit linkler
-  }
-  const rows: Array<{ label: string; href: string; text: string }> = [
-    { label: sourceOf(a.source).label, href: a.source_url, text: a.source_url.replace(/^https?:\/\/(www\.)?/, "") },
-    { label: "Instagram", href: a.instagram_url, text: handleOf(a.instagram_url) },
-    ...(a.review_url ? [{ label: "Artelivo önizleme", href: a.review_url, text: "Taslağı aç" }] : []),
-    ...(c.emails ?? []).map((e) => ({ label: "E-posta", href: `mailto:${e}`, text: e })),
-    ...(c.website ? [{ label: "Site", href: c.website, text: c.website.replace(/^https?:\/\/(www\.)?/, "") }] : []),
-    ...(c.socials ?? []).map((l) => ({ label: l.label, href: l.url, text: l.url.replace(/^https?:\/\/(www\.)?/, "") })),
+  const c = readContacts(a.contacts, a.name);
+  const bare = (u: string) => u.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "");
+  const fixed: Array<{ label: string; href: string; text: string; from: string }> = [
+    { label: sourceOf(a.source).label, href: a.source_url, text: bare(a.source_url), from: "" },
+    { label: "Instagram", href: a.instagram_url, text: handleOf(a.instagram_url), from: "" },
+    ...(a.review_url ? [{ label: "Artelivo önizleme", href: a.review_url, text: "Taslağı aç", from: "" }] : []),
   ];
-  const extra = (c.emails?.length ?? 0) + (c.website ? 1 : 0) + (c.socials?.length ?? 0);
+  // Sanatçının zaten bilinen Instagram profili tekrar listelenmez.
+  const links = c.links.filter((l) => urlKey(l.url) !== urlKey(a.instagram_url));
+  const total = fixed.length + c.emails.length + links.length;
+  const state = c.discoveredAt
+    ? `${c.emails.length} e-posta`
+    : "taranmadı";
   return html`<details class="audit links" data-key="links-${a.id}">
-    <summary>🔗 Bağlantılar (${rows.length})${extra ? "" : html` <span class="muted">· iletişim bilgisi yok</span>`}</summary>
+    <summary>🔗 Bağlantılar (${total}) <span class="muted">· ${state}</span></summary>
     <ul>
-      ${rows.map((r) => html`<li><b>${r.label}</b> <a href="${r.href}" ${r.href.startsWith("mailto:") ? "" : html`target="_blank"`}>${r.text}</a></li>`)}
+      ${fixed.map((r) => html`<li><b>${r.label}</b> <a href="${r.href}" target="_blank">${r.text}</a></li>`)}
+      ${c.emails.map(
+        (e) => html`<li><b>E-posta</b> <a href="mailto:${e.value}">${e.value}</a> <span>· ${e.from}${trustedEmail(e) ? (e.nameMatch ? "" : " · adla eşleşmiyor") : " · davet gönderilmez (sanatçıya ait olduğu belli değil)"}</span></li>`,
+      )}
+      ${c.phones.map((p) => html`<li><b>Telefon</b> <a href="tel:${p.value}">${p.value}</a> <span>· ${p.from}</span></li>`)}
+      ${links.map((l) => html`<li><b>${l.label}</b> <a href="${l.url}" target="_blank">${bare(l.url)}</a> <span>· ${l.from}</span></li>`)}
+      ${c.igBio ? html`<li><b>Instagram bio</b> <span style="white-space:pre-line">${c.igBio}</span></li>` : ""}
+      <li><span>${c.discoveredAt ? `Son tarama: ${c.discoveredAt.slice(0, 16).replace("T", " ")} UTC · ${c.pages} sayfa açıldı` : "Henüz taranmadı — seçip “Bağlantıları tara”."}</span></li>
     </ul>
   </details>`;
 }
 
 function jobSubject(j: Job) {
-  if (j.kind === "dm") {
+  if (j.kind === "dm" || j.kind === "threads") {
     // Gitmeyen mesajı elle kontrol etmek için profil linki (kullanıcı, 2026-10-21).
     const a = one<{ name: string; instagram_url: string }>(
       "SELECT name, instagram_url FROM artists WHERE id = ?",
@@ -1226,7 +1330,11 @@ function jobSubject(j: Job) {
       return html`${a.name} <a class="muted small" href="${a.instagram_url}" target="_blank">${handleOf(a.instagram_url)}</a>`;
     }
   }
-  if (j.kind === "draft" || j.kind === "dm") return artistName(j.ref_id);
+  if (j.kind === "email") {
+    const to = one<{ to_addr: string }>("SELECT to_addr FROM email_messages WHERE artist_id = ?", j.ref_id)?.to_addr;
+    return html`${artistName(j.ref_id)}${to ? html` <span class="muted small">${to}</span>` : ""}`;
+  }
+  if (["draft", "dm", "discover"].includes(j.kind)) return artistName(j.ref_id);
   if (j.kind === "collect" || j.kind === "igsearch") return `Tur #${j.ref_id}`;
   return "";
 }
@@ -1337,6 +1445,9 @@ const SETTING_LABEL: Record<keyof typeof DEFAULT_SETTINGS, string> = {
   igDmDelayMax: "DM'ler arası en çok bekleme (sn)",
   minWorks: "Kaynakta en az eser (yeni tur varsayılanı)",
   maxWorks: "Kaynakta en çok eser (yeni tur varsayılanı)",
+  emailPerDay: "Günde en fazla davet e-postası",
+  emailDelayMin: "E-postalar arası en az bekleme (sn)",
+  emailDelayMax: "E-postalar arası en çok bekleme (sn)",
   testHandle: "Test DM'i için kendi Instagram kullanıcı adın",
 };
 
@@ -1366,6 +1477,8 @@ app.get("/settings", async (c) => {
           <div class="row">
             <form method="post" action="/settings/check" class="inline"><button class="primary" data-busy="Deneniyor">Bağlantıları dene</button></form>
             <form method="post" action="/settings/instagram-login" class="inline"><button class="secondary" data-busy="Açılıyor">Instagram'a giriş (bir kez)</button></form>
+            <form method="post" action="/settings/facebook-login" class="inline"><button class="secondary" data-busy="Açılıyor">Facebook'a giriş (bir kez)</button></form>
+            <form method="post" action="/settings/threads-login" class="inline"><button class="secondary" data-busy="Açılıyor">Threads'e giriş (bir kez)</button></form>
             <form method="post" action="/settings/test-dm" class="inline"><button class="secondary" data-busy="Gönderiliyor">Kendime test DM'i gönder</button></form>
           </div>
         </div>
@@ -1417,6 +1530,28 @@ app.post("/settings/instagram-login", async (c) => {
   return back(c, "/settings", "Instagram giriş penceresi açıldı", "Orada giriş yap; oturum bu profilde kalır.", "info");
 });
 
+// Bağlantı keşfi Facebook sayfalarının iletişim bilgisini okur: giriş ister.
+app.post("/settings/facebook-login", async (c) => {
+  if (queueState.current) return busyRedirect(c);
+  await withBrowserForUi(async () => {
+    const page = await workTab();
+    await page.goto("https://www.facebook.com/login");
+    await page.bringToFront();
+  });
+  return back(c, "/settings", "Facebook giriş penceresi açıldı", "Orada giriş yap; oturum bu profilde kalır.", "info");
+});
+
+// Instagram'dan gitmeyen mesaj Threads'ten denenir: oturum bu profilde bir kez açılır.
+app.post("/settings/threads-login", async (c) => {
+  if (queueState.current) return busyRedirect(c);
+  await withBrowserForUi(async () => {
+    const page = await workTab();
+    await page.goto("https://www.threads.com/login");
+    await page.bringToFront();
+  });
+  return back(c, "/settings", "Threads giriş penceresi açıldı", "\"Instagram ile devam et\" ile gir; oturum bu profilde kalır.", "info");
+});
+
 app.post("/settings/check", async (c) => {
   if (queueState.current) return busyRedirect(c);
   const lines: Array<{ ok: boolean; text: string }> = [];
@@ -1435,8 +1570,29 @@ app.post("/settings/check", async (c) => {
     lines.push({ ok, text: ok ? "Link anahtarı" : `Link anahtarı — ${String(e)}` });
   }
   try {
+    await verifySmtp();
+    lines.push({ ok: true, text: `E-posta (SMTP, ${config.smtp.user})` });
+  } catch (e) {
+    lines.push({ ok: false, text: `E-posta (SMTP) — ${String(e)}` });
+  }
+  try {
     const loggedIn = await withBrowserForUi(async () => isLoggedIn(await workTab()));
     lines.push({ ok: loggedIn, text: loggedIn ? "Instagram oturumu" : "Instagram oturumu — giriş yap" });
+    // Instagram'dan gitmeyen mesaj Threads'ten denenir: oturum çerezi var mı.
+    const threads = await withBrowserForUi(async () =>
+      (await (await workTab()).context().cookies("https://www.threads.com")).some((k) => k.name === "sessionid" && k.value),
+    );
+    const facebook = await withBrowserForUi(async () =>
+      (await (await workTab()).context().cookies("https://www.facebook.com")).some((k) => k.name === "c_user" && k.value),
+    );
+    lines.push({
+      ok: facebook,
+      text: facebook ? "Facebook oturumu" : "Facebook oturumu — Ayarlar → \"Facebook'a giriş (bir kez)\" (sayfalardaki e-posta için)",
+    });
+    lines.push({
+      ok: threads,
+      text: threads ? "Threads oturumu" : "Threads oturumu — Ayarlar → \"Threads'e giriş (bir kez)\"",
+    });
   } catch (e) {
     lines.push({ ok: false, text: `Instagram — ${String(e)}` });
   }

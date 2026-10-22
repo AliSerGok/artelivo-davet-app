@@ -6,7 +6,7 @@ import { db, logEvent, scrubPersonal } from "../db/index.js";
 // uygulama kapanıp açılınca kaldığı yerden sürer.
 // ============================================================================
 
-export type JobKind = "collect" | "igsearch" | "draft" | "dm" | "sync";
+export type JobKind = "collect" | "igsearch" | "draft" | "dm" | "sync" | "discover" | "email" | "threads";
 
 export interface Job {
   id: number;
