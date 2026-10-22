@@ -1,0 +1,35 @@
+{
+  "$comment": "CLAUDE.md'deki kilitli kararlardan tek satırla tutulanlar. gate.mjs: dosya oturumda değiştiyse ve desen eski halde varken şimdi yoksa kapı kapanır. Kod taşınırsa kuralı da taşı; desen JavaScript RegExp.",
+  "rules": [
+    {
+      "file": "src/ai/claude.ts",
+      "pattern": "delete env\\.ANTHROPIC_API_KEY",
+      "why": "API anahtarı `claude -p` alt sürecine verilmez (Max planı, ek ücret yok)"
+    },
+    {
+      "file": "src/server.ts",
+      "pattern": "hostname: \"127\\.0\\.0\\.1\"",
+      "why": "yerel arayüz yalnız 127.0.0.1'e bağlanır"
+    },
+    {
+      "file": "src/server.ts",
+      "pattern": "ORIGINS\\.has\\(`http://\\$\\{host\\}`\\)",
+      "why": "Host başlığı denetimi (DNS rebinding)"
+    },
+    {
+      "file": "src/server.ts",
+      "pattern": "!origin \\|\\| !ORIGINS\\.has\\(origin\\)",
+      "why": "Origin denetimi (CSRF)"
+    },
+    {
+      "file": "src/db/index.ts",
+      "pattern": "createHmac\\(\"sha256\", config\\.hashKey\\)",
+      "why": "KVKK: `seen` yalnız HMAC özeti tutar"
+    },
+    {
+      "file": "src/jobs/handlers.ts",
+      "pattern": "delete out\\.draft\\.email",
+      "why": "iletişim bilgisi Artelivo'ya gitmez; taslağın email alanı silinir"
+    }
+  ]
+}

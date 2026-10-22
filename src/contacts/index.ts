@@ -13,6 +13,12 @@ export interface FoundEmail {
   from: string;
   /** Adres sanatçının adından bir parça taşıyor mu (galeri/kurum adresi ayırmak için). */
   nameMatch: boolean;
+  /**
+   * Sanatçının KENDİ yazdığı yerden mi geldi (Instagram bio'su, kaynak profili,
+   * kendi sitesi/link sayfası, kendi Pinterest/Facebook hesabı). Galeri veya
+   * mağaza sayfasındaki adres değil. Toplanırken belirlenir.
+   */
+  trusted?: boolean;
 }
 
 export interface FoundLink {
@@ -65,7 +71,7 @@ export function readContacts(raw: string | null | undefined, name = ""): Contact
     return c;
   }
   for (const e of parsed.emails ?? []) {
-    if (typeof e === "string") addEmail(c, e, "Saatchi", name);
+    if (typeof e === "string") addEmail(c, e, "Saatchi", name, true);
     else if (e?.value) c.emails.push(e);
   }
   for (const l of parsed.links ?? []) if (l?.url) c.links.push(l);
@@ -104,17 +110,49 @@ function ascii(s: string): string {
     .replace(/[̀-ͯ]/g, "");
 }
 
-export function addEmail(c: Contacts, email: string, from: string, name: string): void {
-  const value = email.trim().toLowerCase();
-  if (c.emails.some((e) => e.value === value)) return;
+/**
+ * Adres sanatçının adını taşıyor mu: 4+ harflik ad parçası adreste geçer; 3
+ * harflik olanlar ("ali", "can") yalnız ayrı bir parça olarak (ali.kaya@…),
+ * yoksa "kalite@…", "canvas@…" eşleşiyordu.
+ */
+export function nameMatches(email: string, name: string): boolean {
+  const value = email.toLowerCase();
   const flat = value.replace(/[^a-z0-9]/g, "");
-  c.emails.push({ value, from, nameMatch: nameTokens(name).some((t) => flat.includes(t)) });
+  const parts = value.split(/[^a-z]+/);
+  return nameTokens(name).some((t) => (t.length >= 4 ? flat.includes(t) : parts.includes(t)));
+}
+
+export function addEmail(c: Contacts, email: string, from: string, name: string, trusted = false): void {
+  const value = email.trim().toLowerCase();
+  const known = c.emails.find((e) => e.value === value);
+  if (known) {
+    // Aynı adres sanatçının kendi yerinde de bulunduysa güvenilir olur.
+    if (trusted) known.trusted = true;
+    return;
+  }
+  c.emails.push({ value, from, nameMatch: nameMatches(value, name), trusted });
 }
 
 export function addPhone(c: Contacts, phone: string, from: string): void {
-  const value = phone.replace(/[^\d+]/g, "");
-  if (value.length < 7 || c.phones.some((p) => p.value === value)) return;
+  const value = phone.replace(/[^\d+]/g, "").replace(/^00/, "+");
+  const digits = value.replace(/\D/g, "");
+  if (digits.length < 10 || digits.length > 15) return;
+  // Aynı numaranın yazım farkları (+90 532…, 0532…) tek kayıt.
+  const tail = digits.slice(-10);
+  if (c.phones.some((p) => p.value.replace(/\D/g, "").endsWith(tail))) return;
   c.phones.push({ value, from });
+}
+
+/** wa.me/905321234567 · api.whatsapp.com/send?phone=… → +905321234567 */
+export function phoneFromWhatsApp(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const digits =
+      (/wa\.me$/i.test(u.hostname) ? u.pathname.slice(1) : u.searchParams.get("phone") ?? "").replace(/\D/g, "");
+    return digits.length >= 10 ? `+${digits}` : null;
+  } catch {
+    return null;
+  }
 }
 
 export function addLink(c: Contacts, url: string, from: string): void {
@@ -122,7 +160,11 @@ export function addLink(c: Contacts, url: string, from: string): void {
   if (!clean) return;
   const key = urlKey(clean);
   if (c.links.some((l) => urlKey(l.url) === key)) return;
-  c.links.push({ label: linkLabel(clean), url: clean, from });
+  const label = linkLabel(clean);
+  c.links.push({ label, url: clean, from });
+  // WhatsApp linki bir telefon numarasıdır (kullanıcı, 2026-10-23).
+  const phone = label === "WhatsApp" ? phoneFromWhatsApp(clean) : null;
+  if (phone) addPhone(c, phone, "WhatsApp");
 }
 
 /** http(s) adresi değilse null; Instagram/Facebook yönlendirme sarmalı açılır. */
@@ -181,8 +223,9 @@ const LABELS: Array<[RegExp, string]> = [
   [/(^|\.)singulart\.com$/, "Singulart"],
   [/(^|\.)artfinder\.com$/, "Artfinder"],
   [/(^|\.)etsy\.com$/, "Etsy"],
+  [/(^|\.)shopier\.com$/, "Shopier"],
   [/(^|\.)(wa\.me|whatsapp\.com)$/, "WhatsApp"],
-  [/(^|\.)t\.me$/, "Telegram"],
+  [/(^|\.)(t\.me|telegram\.me)$/, "Telegram"],
   [/(^|\.)spotify\.com$/, "Spotify"],
 ];
 
@@ -217,30 +260,17 @@ export function notInspectable(url: string): boolean {
 }
 
 /**
- * Otomatik davet gidebilecek adres mi: adı taşıyor, bulunduğu sitenin kendi
- * alan adında, ya da sanatçının kendi yazdığı yerde (kaynak profili, Instagram
- * bio'su, link sayfası). Bir mağaza/galeri sayfasındaki başka adres GİTMEZ.
+ * Otomatik davet gidebilecek adres mi: sanatçının kendi yazdığı yerden geldi
+ * (toplanırken `trusted`) ya da adını taşıyor. Galeri/mağaza sayfasındaki,
+ * adla eşleşmeyen adrese davet GİTMEZ (sahiplenme linki üçüncü kişiye gider).
  */
 export function trustedEmail(e: FoundEmail): boolean {
-  if (e.nameMatch) return true;
-  const domain = e.value.split("@")[1] ?? "";
-  const place = hostOf(`https://${e.from}`);
-  if (place && (domain === place || place.endsWith(`.${domain}`))) return true;
-  // Sanatçının kendi yazdığı yerler: kaynak profili, Instagram bio'su, kendi
-  // Facebook sayfasının iletişim bilgileri (link bio'dan/link sayfasından gelir).
-  if (/^(Instagram bio|Saatchi|Saatchi Art|Facebook|Pinterest)$/.test(e.from)) return true;
-  return isAggregator(`https://${e.from}`);
+  return e.trusted === true || e.nameMatch;
 }
 
-/**
- * Davet gidecek tek adres (güvenilirler arasından): adı taşıyan, sonra
- * sanatçının kendi sitesinin alan adındaki, sonra kendi yazdığı yerdeki.
- */
+/** Davet gidecek tek adres (güvenilirler arasından): adı taşıyan, sonra kendi yerinden gelen. */
 export function bestEmail(c: Contacts): FoundEmail | null {
-  const sites = new Set(c.links.filter((l) => l.label === "Site").map((l) => hostOf(l.url)));
   const score = (e: FoundEmail) =>
-    (e.nameMatch ? 4 : 0) +
-    (sites.has(e.value.split("@")[1] ?? "") ? 2 : 0) +
-    (/instagram|saatchi/i.test(e.from) ? 1 : 0);
+    (e.nameMatch ? 4 : 0) + (e.trusted ? 2 : 0) + (/instagram|saatchi/i.test(e.from) ? 1 : 0);
   return [...c.emails].filter(trustedEmail).sort((a, b) => score(b) - score(a))[0] ?? null;
 }

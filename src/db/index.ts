@@ -159,6 +159,19 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE dm_messages ADD COLUMN via TEXT;
   `,
+  // 2026-10-23: kim aldı / kim sildi bilinsin (kullanıcı: veri yalnız bu bilgisayarda).
+  // Davet kapanınca `artists` satırı yine silinir; buraya yalnız ad ve linkler kalır.
+  `
+  CREATE TABLE invite_outcomes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    outcome       TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    instagram_url TEXT,
+    source_url    TEXT,
+    sent_at       TEXT,
+    closed_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
 ];
 
 function migrate(): void {

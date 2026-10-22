@@ -3,8 +3,10 @@ import type { Page } from "playwright";
 import {
   addEmail,
   addLink,
+  addPhone,
   type Contacts,
   hostOf,
+  linkLabel,
   isAggregator,
   normalizeUrl,
   recordOnly,
@@ -34,6 +36,7 @@ const SUBPAGE =
 
 export interface CrawlResult {
   emails: Array<{ value: string; from: string }>;
+  phones: Array<{ value: string; from: string }>;
   links: Array<{ url: string; from: string }>;
   pages: number;
 }
@@ -66,7 +69,8 @@ export function placeOf(url: string): string {
 export function ownedBy(ident: string[]) {
   return (url: string) => {
     const flat = url.toLowerCase().replace(/[^a-z0-9]/g, "");
-    return ident.some((t) => t.length >= 3 && flat.includes(t.replace(/[^a-z0-9]/g, "")));
+    // 3 harflik ad parçaları ("ali", "can") her adreste geçer: en az 4.
+    return ident.some((t) => t.length >= 4 && flat.includes(t.replace(/[^a-z0-9]/g, "")));
   };
 }
 
@@ -77,7 +81,7 @@ export async function crawl(
   maxPages = MAX_PAGES,
 ): Promise<CrawlResult> {
   const owned = ownedBy(ident);
-  const out: CrawlResult = { emails: [], links: [], pages: 0 };
+  const out: CrawlResult = { emails: [], phones: [], links: [], pages: 0 };
   const seen = new Set<string>();
   const subCount = new Map<string, number>();
   const queue: Item[] = [];
@@ -101,6 +105,7 @@ export async function crawl(
     if (!html) continue;
     const from = placeOf(item.url);
     for (const value of extractEmails(html)) out.emails.push({ value, from });
+    for (const value of extractPhones(html)) out.phones.push({ value, from });
     const host = hostOf(item.url);
     for (const href of extractLinks(html, item.url)) {
       const h = hostOf(href);
@@ -117,7 +122,10 @@ export async function crawl(
       }
       // Kayda: link sayfasındaki her şey (sanatçının kendi seçtikleri); bir
       // sitede yalnız tanınan platformlar (basın, tema, CDN linkleri değil).
-      if (isAggregator(item.url) || ((recordOnly(href) || isAggregator(href)) && owned(href)))
+      // WhatsApp/Telegram iletişim kanalıdır: sanatçının kendi sayfasında ad
+      // taşımasa da kaydedilir (wa.me/90532…).
+      const channel = ["WhatsApp", "Telegram"].includes(linkLabel(href));
+      if (isAggregator(item.url) || channel || ((recordOnly(href) || isAggregator(href)) && owned(href)))
         out.links.push({ url: href, from });
       // Başka siteye: yalnız link sayfasından ya da başlangıç sayfasından
       // bir link sayfasına geçilir (sitedeki basın/galeri linkleri açılmaz).
@@ -230,6 +238,25 @@ export function extractEmails(rawHtml: string): string[] {
   return [...found];
 }
 
+// +90 532 123 45 67 · 0532 123 45 67 · 00 7 912 … · (0212) 123 45 67
+const PHONE = /(?<![\w+/=.-])(?:(?:\+|00)\d{1,3}[\s.-]?)?\(?0?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}(?![\w/-])/g;
+
+/** Metindeki telefonlar: `tel:` linkleri ve + ya da 0 ile başlayan 10–15 haneli numaralar. */
+export function extractPhones(rawHtml: string): string[] {
+  const html = decodeEntities(rawHtml);
+  const found = new Set<string>();
+  for (const m of html.matchAll(/href\s*=\s*["']tel:([^"']+)["']/gi)) found.add(decodeURIComponent(m[1] ?? "").trim());
+  for (const m of visibleText(html).matchAll(PHONE)) {
+    const v = m[0].trim();
+    // Kimlik/sayaç gibi düz rakam dizileri değil: + ya da 0 ile başlar.
+    if (/^(\+|00|0|\(0)/.test(v)) found.add(v);
+  }
+  return [...found].filter((v) => {
+    const d = v.replace(/\D/g, "");
+    return d.length >= 10 && d.length <= 15;
+  });
+}
+
 export function extractLinks(html: string, base: string): string[] {
   const out = new Set<string>();
   for (const m of html.matchAll(/<a\b[^>]*?\bhref\s*=\s*["']([^"'#][^"']*)["']/gi)) {
@@ -259,7 +286,8 @@ export function applyIgInfo(
 ): void {
   c.igBio = info.bio || c.igBio;
   c.igChecked = true;
-  for (const e of extractEmails(info.bio)) addEmail(c, e, "Instagram bio", name);
+  for (const e of extractEmails(info.bio)) addEmail(c, e, "Instagram bio", name, true);
+  for (const p of extractPhones(info.bio.replace(/</g, " "))) addPhone(c, p, "Instagram bio");
   for (const url of info.links) addLink(c, url, "Instagram bio");
   // Bio'da düz yazılmış alan adları ("ayseart.com", "linktr.ee/ayse"). "X
   // takip ediyor" satırı kullanıcı adıdır, alan adı değil ("zeynep.artstudio"
@@ -283,8 +311,8 @@ export function applyIgInfo(
 export async function readFacebookContact(
   page: Page,
   url: string,
-): Promise<{ emails: string[]; links: string[]; loginWall: boolean }> {
-  const out = { emails: [] as string[], links: [] as string[], loginWall: false };
+): Promise<{ emails: string[]; phones: string[]; links: string[]; loginWall: boolean }> {
+  const out = { emails: [] as string[], phones: [] as string[], links: [] as string[], loginWall: false };
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
   await sleep(3000);
   const wall = async () =>
@@ -302,6 +330,7 @@ export async function readFacebookContact(
   const main = page.locator('[role="main"]').first();
   const text = await main.innerText({ timeout: 3000 }).catch(() => "");
   out.emails = extractEmails(text.replace(/</g, " "));
+  out.phones = extractPhones(text.replace(/</g, " "));
   // İletişim bölümündeki dış linkler (l.facebook.com sarmalı açılır).
   const hrefs = await main
     .locator('a[href*="l.facebook.com"]')
@@ -359,12 +388,16 @@ export async function readPinterest(url: string): Promise<PlatformResult | null>
   const d = json?.resource_response?.data;
   if (!d) return null;
   const str = (v: unknown) => (typeof v === "string" ? v : "");
+  // İletişim seçenekleri iş hesabında `partner` altında (2026-10-23 bakıldı).
+  const partner = (d.partner && typeof d.partner === "object" ? d.partner : {}) as Record<string, unknown>;
   const emails = new Set<string>();
-  if (str(d.contact_email).includes("@")) emails.add(str(d.contact_email).toLowerCase());
+  for (const v of [partner.contact_email, d.contact_email])
+    if (str(v).includes("@")) emails.add(str(v).trim().toLowerCase());
   for (const e of extractEmails(str(d.about).replace(/</g, " "))) emails.add(e);
+  const phone = str(partner.contact_phone) || str(d.contact_phone);
   return {
     emails: [...emails],
-    phones: str(d.contact_phone) ? [str(d.contact_phone)] : [],
+    phones: phone ? [phone] : [],
     links: [str(d.website_url), str(d.domain_url)].filter((u) => /^https?:\/\//i.test(u)),
   };
 }
@@ -380,7 +413,7 @@ export async function readPlatformPage(
   const owned = ownedBy(ident);
   return {
     emails: extractEmails(html),
-    phones: [],
+    phones: extractPhones(html),
     links: extractLinks(html, url).filter((l) => hostOf(l) !== hostOf(url) && owned(l)),
   };
 }

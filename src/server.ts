@@ -24,7 +24,7 @@ import {
   setStage,
   syncWithArtelivo,
 } from "./jobs/handlers.js";
-import { readContacts, trustedEmail, urlKey } from "./contacts/index.js";
+import { bestEmail, readContacts, trustedEmail, urlKey } from "./contacts/index.js";
 import { verifySmtp } from "./mail/index.js";
 import {
   cancelJob,
@@ -140,6 +140,8 @@ interface TabDef {
   key: string;
   label: string;
   stages: string[] | null;
+  /** Yalnız bağlantı taraması yapılmışlar (aşamadan bağımsız ek sekme). */
+  scanned?: boolean;
 }
 
 /** Sanatçılar sekmeleri (kullanıcı, 2026-10-20). Sıra = akışın sırası. */
@@ -148,6 +150,8 @@ const ARTIST_TABS: TabDef[] = [
   { key: "olusturulan", label: "Taslağı oluşturulan", stages: ["drafted"] },
   { key: "onaylanan", label: "Taslağı onaylanan", stages: ["preview_approved", "dm_ready"] },
   { key: "gonderilen", label: "Mesaj gönderilen", stages: ["dm_sent", "claimed", "declined", "expired", "withdrawn"] },
+  // Ek sekme (kullanıcı, 2026-10-23): taranan sanatçı akış sekmesinde de kalır.
+  { key: "taranan", label: "Bağlantısı taranan", stages: null, scanned: true },
   { key: "tumu", label: "Tümü", stages: null },
 ];
 
@@ -207,6 +211,27 @@ function dataVersion(): string {
 const artistName = (id: number) =>
   one<{ name: string }>("SELECT name FROM artists WHERE id = ?", id)?.name ?? `#${id}`;
 
+/**
+ * Toplu işin ilerlemesi: sırada/çalışan en eski bu türden işten bu yana
+ * eklenenler ("4/18", "3 tamam, 14 kaldı"). Tek işse null.
+ */
+function batchOf(kind: string): { position: string; tally: string } | null {
+  const b = one<{ total: number; done: number; failed: number; left: number }>(
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(status = 'done'), 0) AS done,
+            COALESCE(SUM(status = 'failed'), 0) AS failed,
+            COALESCE(SUM(status = 'queued'), 0) AS left
+       FROM jobs
+      WHERE kind = ? AND status != 'cancelled'
+        AND created_at >= (SELECT MIN(created_at) FROM jobs WHERE kind = ? AND status IN ('queued','running'))`,
+    kind,
+    kind,
+  );
+  if (!b || b.total <= 1) return null;
+  const tally = [`${b.done} tamam`, ...(b.failed ? [`${b.failed} hatalı`] : []), `${b.left} kaldı`];
+  return { position: `${b.done + b.failed + 1}/${b.total}`, tally: tally.join(", ") };
+}
+
 /** Çalışan işin insan diliyle anlatımı (üstteki "şu an" şeridi). */
 function describeJob(job: Job): { title: string; detail: string; since: string | null } {
   const since =
@@ -237,29 +262,17 @@ function describeJob(job: Job): { title: string; detail: string; since: string |
         : a?.stage === "extracting"
           ? "2/3 · Claude taslağı hazırlıyor, sonra Artelivo'ya gönderilecek"
           : "Artelivo'da açık taslak aranıyor";
-    // Parti: sırada/çalışan en eski taslak işinden bu yana eklenen taslak işleri.
-    const batch = one<{ total: number; done: number; failed: number; left: number }>(
-      `SELECT COUNT(*) AS total,
-              COALESCE(SUM(status = 'done'), 0) AS done,
-              COALESCE(SUM(status = 'failed'), 0) AS failed,
-              COALESCE(SUM(status = 'queued'), 0) AS left
-         FROM jobs
-        WHERE kind = 'draft' AND status != 'cancelled'
-          AND created_at >= (SELECT MIN(created_at) FROM jobs WHERE kind = 'draft' AND status IN ('queued','running'))`,
-    );
     const name = a?.name ?? `#${job.ref_id}`;
-    if (!batch || batch.total <= 1) return { title: `Taslak: ${name}`, detail, since };
-    const tally = [`${batch.done} tamam`, ...(batch.failed ? [`${batch.failed} hatalı`] : []), `${batch.left} kaldı`];
-    return {
-      title: `Taslak ${batch.done + batch.failed + 1}/${batch.total}: ${name} · ${tally.join(", ")}`,
-      detail,
-      since,
-    };
+    const b = batchOf("draft");
+    return { title: b ? `Taslak ${b.position}: ${name} · ${b.tally}` : `Taslak: ${name}`, detail, since };
   }
   if (job.kind === "discover") {
+    // Toplu taramada sırayla, biri bitmeden diğeri başlamaz; sayaç bunu gösterir.
+    const name = artistName(job.ref_id);
+    const b = batchOf("discover");
     return {
-      title: `Bağlantılar taranıyor: ${artistName(job.ref_id)}`,
-      detail: "Saatchi, Instagram bio'su ve oradaki linkler (en çok 15 sayfa)",
+      title: b ? `Bağlantı taraması ${b.position}: ${name} · ${b.tally}` : `Bağlantılar taranıyor: ${name}`,
+      detail: "Saatchi, Instagram bio'su, siteler ve platform profilleri (en çok 15 sayfa)",
       since,
     };
   }
@@ -704,14 +717,16 @@ app.get("/artists", (c) => {
     expired: "süresi doldu",
     withdrawn: "taslak silindi",
   };
-  const inTab = (t: TabDef, stage: string) => !t.stages || t.stages.includes(stage);
-  const counts = ARTIST_TABS.map((t) => ({ ...t, count: rows.filter((r) => inTab(t, r.stage)).length }));
+  const scanned = new Set(rows.filter((r) => readContacts(r.contacts).discoveredAt).map((r) => r.id));
+  const inTab = (t: TabDef, r: { id: number; stage: string }) =>
+    (!t.stages || t.stages.includes(r.stage)) && (!t.scanned || scanned.has(r.id));
+  const counts = ARTIST_TABS.map((t) => ({ ...t, count: rows.filter((r) => inTab(t, r)).length }));
   // Sekme seçilmediyse: akışta işi olan ilk sekme.
   const requested = ARTIST_TABS.find((t) => t.key === c.req.query("tab"));
-  const tab = requested ?? counts.find((t) => t.count > 0 && t.key !== "tumu") ?? ARTIST_TABS[0]!;
-  const shown = rows.filter((r) => inTab(tab, r.stage));
+  const tab = requested ?? counts.find((t) => t.count > 0 && !["tumu", "taranan"].includes(t.key)) ?? ARTIST_TABS[0]!;
+  const shown = rows.filter((r) => inTab(tab, r));
   const can = (action: "draft" | "preview" | "dm") =>
-    tab.key === "tumu" ||
+    ["tumu", "taranan"].includes(tab.key) ||
     (action === "draft" && tab.key === "bekleyen") ||
     (action === "preview" && ["olusturulan", "onaylanan"].includes(tab.key)) ||
     (action === "dm" && tab.key === "onaylanan");
@@ -720,6 +735,7 @@ app.get("/artists", (c) => {
     olusturulan: "Önizlemeleri aç, her birinde Onayla — onaylananlar kendiliğinden yan sekmeye geçer.",
     onaylanan: "Seç → Mesaj hazırla. Mesajlar, Mesajlar sayfasında okunup gönderilir.",
     gonderilen: "Mesajı gitmiş sanatçılar; sahiplenen / istemeyen / süresi dolan burada görünür, sonra kayıtları silinir.",
+    taranan: "Bağlantı taraması yapılmış sanatçılar (aşamaları ne olursa olsun; akış sekmelerinde de görünürler). Sonuç her satırın Bağlantılar kutusunda.",
     tumu: "Bütün sanatçılar.",
   };
   return c.html(
@@ -1032,12 +1048,13 @@ function emailLine(m: {
   email_error: string | null;
   email_sent_at: string | null;
 }) {
-  const found = readContacts(m.contacts, m.name).emails;
-  if (!m.email_to && !found.length) return "";
+  // Gidecek adres yalnız güvenilir olanlardan seçilir (queueEmail ile aynı kural).
+  const best = bestEmail(readContacts(m.contacts, m.name));
+  if (!m.email_to && !best) return "";
   const st = m.email_status ? (DM_STATUS[m.email_status] ?? { label: m.email_status, tone: "neutral" as Tone }) : null;
-  const canSend = found.length && !["sent", "sending", "waiting", "unverified"].includes(m.email_status ?? "");
+  const canSend = best && !["sent", "sending", "waiting", "unverified"].includes(m.email_status ?? "");
   return html`<div class="row small">
-    <span>✉ E-posta: <b>${m.email_to ?? found.map((e) => e.value).join(", ")}</b></span>
+    <span>✉ E-posta: <b>${m.email_to ?? best?.value ?? ""}</b></span>
     ${st ? badge(st.label, st.tone) : m.status === "draft" ? html`<span class="muted">mesajla birlikte gider</span>` : ""}
     ${m.email_sent_at ? html`<span class="muted">${m.email_sent_at}</span>` : ""}
     ${canSend && (m.email_status || m.status !== "draft") ? html`<button class="subtle" form="email_${m.artist_id}" data-busy="Sıraya alınıyor">E-postayı gönder</button>` : ""}
@@ -1189,11 +1206,13 @@ app.post("/messages/:id/resend", (c) => {
 // Sıradaki (henüz gitmemiş) mesajı geri al: düzenlenebilir olur.
 app.post("/messages/:id/unqueue", (c) => {
   const id = Number(c.req.param("id"));
-  if (["dm", "threads"].includes(queueState.current?.kind ?? "") && queueState.current?.ref_id === id) {
+  if (["dm", "threads", "email"].includes(queueState.current?.kind ?? "") && queueState.current?.ref_id === id) {
     return back(c, backPath(c, "/messages"), "Şu an gönderiliyor", "Geri alınamaz; bitmesini bekle.", "warn");
   }
-  db.prepare("UPDATE jobs SET status = 'cancelled' WHERE kind IN ('dm','threads') AND ref_id = ? AND status = 'queued'").run(id);
+  // Davet e-postası da geri çekilir: mesajla birlikte sıraya girmişti.
+  db.prepare("UPDATE jobs SET status = 'cancelled' WHERE kind IN ('dm','threads','email') AND ref_id = ? AND status = 'queued'").run(id);
   db.prepare("UPDATE dm_messages SET status = 'draft', error = NULL WHERE artist_id = ? AND status = 'waiting'").run(id);
+  db.prepare("DELETE FROM email_messages WHERE artist_id = ? AND status = 'waiting'").run(id);
   return back(c, backPath(c, "/messages"), `Sıradan çıkarıldı: ${artistName(id)}`, "Düzenleyip yeniden gönderebilirsin.", "info");
 });
 
@@ -1241,6 +1260,81 @@ app.post("/messages/send", async (c) => {
     `${n} mesaj sıraya alındı${mails ? ` · ${mails} e-posta` : ""}`,
     queueState.paused ? "Kuyruk durduruldu — İşler'den sürdürünce gider." : "Sırayla gidecek; her biri bitince haber veririm.",
     queueState.paused ? "warn" : "ok",
+  );
+});
+
+// ─── Davet sonuçları ────────────────────────────────────────────────────────
+
+/**
+ * Kim profilini aldı, kim sildi, kim henüz karar vermedi (kullanıcı, 2026-10-23).
+ * Kapananlar `invite_outcomes`'tan; o tablodan önce kapananların adı yok, yalnız sayısı.
+ */
+app.get("/outcomes", async (c) => {
+  let syncError = "";
+  if (config.artelivo.agentKey) {
+    await syncWithArtelivo().catch((e: unknown) => {
+      syncError = String(e).slice(0, 200);
+    });
+  }
+  type Row = { name: string; instagram_url: string | null; source_url: string | null; sent_at: string | null; at: string };
+  const closedRows = (outcome: string) =>
+    db
+      .prepare(
+        `SELECT name, instagram_url, source_url, sent_at, closed_at AS at
+         FROM invite_outcomes WHERE outcome = ? ORDER BY closed_at DESC`,
+      )
+      .all(outcome) as Row[];
+  const pending = db
+    .prepare(
+      `SELECT a.name, a.instagram_url, a.source_url, COALESCE(m.sent_at, e.sent_at) AS sent_at,
+              COALESCE(m.sent_at, e.sent_at, a.updated_at) AS at
+       FROM artists a
+       LEFT JOIN dm_messages m ON m.artist_id = a.id
+       LEFT JOIN email_messages e ON e.artist_id = a.id
+       WHERE a.stage = 'dm_sent' ORDER BY at ASC`,
+    )
+    .all() as Row[];
+  const closed = closedCounts();
+
+  const section = (title: string, hint: string, tone: Tone, rows: Row[], outcome: string | null, atLabel: string) => {
+    const unnamed = outcome ? Math.max(0, (closed[outcome] ?? 0) - rows.length) : 0;
+    return html`<div class="card flush">
+      <div style="padding:14px 14px 0"><h2>${title} ${badge(String(rows.length + unnamed), tone)}</h2><p class="muted small">${hint}</p></div>
+      ${rows.length
+        ? html`<table>
+            <thead><tr><th>Sanatçı</th><th>Mesaj gitti</th><th>${atLabel}</th></tr></thead>
+            <tbody>
+            ${rows.map(
+              (r) => html`<tr>
+                <td><b>${r.name}</b>
+                  <div class="muted small">${r.instagram_url ? html`<a href="${r.instagram_url}" target="_blank">${handleOf(r.instagram_url)}</a>` : ""}${r.instagram_url && r.source_url ? " · " : ""}${r.source_url ? html`<a href="${r.source_url}" target="_blank">Kaynak</a>` : ""}</div></td>
+                <td class="muted small nowrap">${r.sent_at ?? "—"}</td>
+                <td class="muted small nowrap">${r.at}</td>
+              </tr>`,
+            )}
+            </tbody>
+          </table>`
+        : unnamed
+          ? ""
+          : html`<p class="muted small" style="padding:0 14px 14px">Henüz kimse yok.</p>`}
+      ${unnamed
+        ? html`<p class="muted small" style="padding:0 14px 14px">+ ${unnamed} kişi daha — bu sayfadan önce kapandığı için adı tutulmadı.</p>`
+        : ""}
+    </div>`;
+  };
+
+  return c.html(
+    page(
+      "Davet sonuçları",
+      "/outcomes",
+      html`
+        ${pageHeader("Davet sonuçları", "Mesajı giden sanatçılar profil taslağına ne yaptı. Sayfa açılırken Artelivo'dan güncellenir.")}
+        ${syncError ? html`<div class="callout warn"><div><b>Artelivo'ya ulaşılamadı</b> — son bilinen durum gösteriliyor. ${syncError}</div></div>` : ""}
+        ${section("Onayladı", "Profilini aldı; artık Artelivo'da.", "ok", closedRows("claimed"), "claimed", "Aldığı an")}
+        ${section("Sildi", "Taslağı istemedi; Artelivo'dan silindi.", "bad", closedRows("declined"), "declined", "Sildiği an")}
+        ${section("Beklemede", "Mesajı gitti, henüz karar vermedi (en eski önce).", "info", pending, null, "Bekliyor (başlangıç)")}
+      `,
+    ),
   );
 });
 
@@ -1292,14 +1386,17 @@ function linksView(a: {
   contacts: string | null;
 }) {
   const c = readContacts(a.contacts, a.name);
-  const bare = (u: string) => u.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "");
-  const fixed: Array<{ label: string; href: string; text: string; from: string }> = [
-    { label: sourceOf(a.source).label, href: a.source_url, text: bare(a.source_url), from: "" },
-    { label: "Instagram", href: a.instagram_url, text: handleOf(a.instagram_url), from: "" },
-    ...(a.review_url ? [{ label: "Artelivo önizleme", href: a.review_url, text: "Taslağı aç", from: "" }] : []),
+  const bare = (u: string) => u.replace(/^https?:\/\/(www\.)?/, "").replace(/[?#].*$/, "").replace(/\/$/, "");
+  const fixed: Array<{ label: string; href: string; text: string }> = [
+    { label: sourceOf(a.source).label, href: a.source_url, text: bare(a.source_url) },
+    { label: "Instagram", href: a.instagram_url, text: handleOf(a.instagram_url) },
+    ...(a.review_url ? [{ label: "Önizleme", href: a.review_url, text: "Taslağı aç" }] : []),
   ];
-  // Sanatçının zaten bilinen Instagram profili tekrar listelenmez.
-  const links = c.links.filter((l) => urlKey(l.url) !== urlKey(a.instagram_url));
+  // Zaten bilinen kaynak profili ve Instagram tekrar listelenmez (sorgu parametresi farkı sayılmaz).
+  const known = new Set([a.source_url, a.instagram_url].map((u) => urlKey(u).replace(/\?.*$/, "")));
+  const links = c.links.filter((l) => !known.has(urlKey(l.url).replace(/\?.*$/, "")));
+  const row = (label: string, value: Raw | string, from = "") =>
+    html`<li><b>${label}</b><div>${value}${from ? html`<small>${from}</small>` : ""}</div></li>`;
   const total = fixed.length + c.emails.length + links.length;
   const state = c.discoveredAt
     ? `${c.emails.length} e-posta`
@@ -1307,14 +1404,26 @@ function linksView(a: {
   return html`<details class="audit links" data-key="links-${a.id}">
     <summary>🔗 Bağlantılar (${total}) <span class="muted">· ${state}</span></summary>
     <ul>
-      ${fixed.map((r) => html`<li><b>${r.label}</b> <a href="${r.href}" target="_blank">${r.text}</a></li>`)}
-      ${c.emails.map(
-        (e) => html`<li><b>E-posta</b> <a href="mailto:${e.value}">${e.value}</a> <span>· ${e.from}${trustedEmail(e) ? (e.nameMatch ? "" : " · adla eşleşmiyor") : " · davet gönderilmez (sanatçıya ait olduğu belli değil)"}</span></li>`,
+      ${fixed.map((r) => row(r.label, html`<a href="${r.href}" target="_blank" title="${r.href}">${r.text}</a>`))}
+      ${c.emails.map((e) =>
+        row(
+          "E-posta",
+          html`<a href="mailto:${e.value}">${e.value}</a>`,
+          `${e.from}${trustedEmail(e) ? (e.nameMatch ? "" : " · adla eşleşmiyor") : " · davet gönderilmez (sanatçıya ait olduğu belli değil)"}`,
+        ),
       )}
-      ${c.phones.map((p) => html`<li><b>Telefon</b> <a href="tel:${p.value}">${p.value}</a> <span>· ${p.from}</span></li>`)}
-      ${links.map((l) => html`<li><b>${l.label}</b> <a href="${l.url}" target="_blank">${bare(l.url)}</a> <span>· ${l.from}</span></li>`)}
-      ${c.igBio ? html`<li><b>Instagram bio</b> <span style="white-space:pre-line">${c.igBio}</span></li>` : ""}
-      <li><span>${c.discoveredAt ? `Son tarama: ${c.discoveredAt.slice(0, 16).replace("T", " ")} UTC · ${c.pages} sayfa açıldı` : "Henüz taranmadı — seçip “Bağlantıları tara”."}</span></li>
+      ${c.phones.map((p) => {
+        // wa.me uluslararası numara ister: 0 ile başlayan 11 hane Türkiye sayılır.
+        const d = p.value.replace(/\D/g, "");
+        const wa = p.value.startsWith("+") ? d : d.length === 11 && d.startsWith("0") ? `90${d.slice(1)}` : null;
+        return row(
+          "Telefon",
+          html`<a href="tel:${p.value}">${p.value}</a>${wa ? html` · <a href="https://wa.me/${wa}" target="_blank">WhatsApp</a>` : ""}`,
+          p.from,
+        );
+      })}
+      ${links.map((l) => row(l.label, html`<a href="${l.url}" target="_blank" title="${l.url}">${bare(l.url)}</a>`, l.from))}
+      <li class="foot">${c.discoveredAt ? `Son tarama: ${c.discoveredAt.slice(0, 16).replace("T", " ")} UTC · ${c.pages} sayfa açıldı` : "Henüz taranmadı — seçip “Bağlantıları tara”."}</li>
     </ul>
   </details>`;
 }

@@ -79,6 +79,7 @@ const NAV = [
   ["/", "Turlar", "runs", "M3 5h18M3 12h18M3 19h12"],
   ["/artists", "Sanatçılar", "artists", "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 9a7 7 0 0 1 14 0"],
   ["/messages", "Mesajlar", "messages", "M4 5h16v11H8l-4 4V5Z"],
+  ["/outcomes", "Davet sonuçları", "", "M5 12l4 4L19 6"],
   ["/jobs", "İşler", "jobs", "M12 7v5l3 2M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z"],
   ["/settings", "Ayarlar", "", "M4 7h10M18 7h2M4 17h4M12 17h8M14 5v4M8 15v4"],
 ] as const;
@@ -155,7 +156,12 @@ textarea{width:100%;min-height:170px;line-height:1.55}input[type=checkbox]{width
 .audit{margin-top:6px;font-size:12px}.audit summary{cursor:pointer;font-weight:600;list-style:none}.audit summary::-webkit-details-marker{display:none}
 .audit summary.ok{color:var(--ok)}.audit summary.warn{color:var(--warn)}.audit summary.bad{color:var(--bad)}
 .audit ul{list-style:none;margin:6px 0 0;padding:8px 10px;background:var(--neutral-bg);border-radius:8px;display:grid;gap:3px;min-width:320px}
-.links summary{color:var(--muted)}.links li b{display:inline-block;min-width:110px;color:var(--muted);font-weight:600}.links li a{word-break:break-all}
+.links summary{color:var(--muted)}.links ul{gap:6px;padding:10px 12px}
+.links li{display:grid;grid-template-columns:96px minmax(0,1fr);gap:10px;align-items:baseline}
+.links li b{color:var(--muted);font-weight:600}.links li div{min-width:0}
+.links li a{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+.links li small{display:block;color:var(--faint);font-size:11px}
+.links li.foot{display:block;margin-top:4px;padding-top:6px;border-top:1px solid var(--line);color:var(--muted)}
 .audit li span{color:var(--muted)}.audit .a-ok b{color:var(--ok)}.audit .a-warn b{color:var(--warn)}.audit .a-bad b{color:var(--bad)}.audit .a-none b{color:var(--faint)}
 .tabs{display:flex;gap:2px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin:0 0 12px}
 .tab{display:inline-flex;align-items:center;gap:8px;padding:9px 14px;text-decoration:none;color:var(--muted);font-weight:600;border-bottom:2px solid transparent;margin-bottom:-1px}

@@ -38,7 +38,9 @@ penceresini kapatmak uygulamayı kapatır.
    Onayda sağdaki Instagram profilinin bio'su ve linkleri okunur ve sanatçı için
    **bağlantı keşfi** sıraya girer: Saatchi profili, Instagram bio'su ve oradaki linkler
    (link sayfaları, kişisel site ve iletişim/hakkında sayfaları; sanatçı başına en çok
-   15 sayfa) taranır, e-postalar ve linkler toplanır. Sonuç Sanatçılar'da her satırın
+   15 sayfa) taranır; Pinterest "İletişim Kur", Facebook sayfası "İletişim bilgileri"
+   (Ayarlar → "Facebook'a giriş" gerekir), Threads/TikTok/YouTube profilleri de açılır.
+   E-postalar, telefonlar (WhatsApp linkindeki numara dahil), WhatsApp/Telegram ve diğer linkler toplanır. Sonuç Sanatçılar'da her satırın
    **🔗 Bağlantılar** kutusunda; eski sanatçılar için seç → **"Bağlantıları tara"**.
 3. **Sanatçılar** → seç → **"Seçililerin taslağını oluştur"**. Taslaklar sırayla, tek tek
    oluşur (Saatchi'deki her şey MAPPING.md kurallarıyla alınır).

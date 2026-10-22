@@ -39,6 +39,8 @@ import {
   addLink,
   addPhone,
   bestEmail,
+  hostOf,
+  isAggregator,
   nameTokens,
   notInspectable,
   readContacts,
@@ -50,7 +52,9 @@ import {
   applyIgInfo,
   crawl,
   extractEmails,
+  extractPhones,
   MAX_PAGES,
+  ownedBy,
   readFacebookContact,
   readPinterest,
   readPlatformPage,
@@ -290,7 +294,8 @@ function mergeSourceContacts(artist: Artist, scraped: ScrapedArtist): void {
   const text = [s?.email, s?.about, s?.education, s?.exhibitions, s?.events, scraped.profileText]
     .filter(Boolean)
     .join("\n");
-  for (const e of extractEmails(text)) addEmail(c, e, label, artist.name);
+  for (const e of extractEmails(text)) addEmail(c, e, label, artist.name, true);
+  for (const p of extractPhones(text.replace(/</g, " "))) addPhone(c, p, label);
   for (const url of [s?.website, ...(s?.socials ?? []).map((l) => l.url)])
     if (url) addLink(c, url, label);
   saveContacts(artist.id, c);
@@ -315,7 +320,9 @@ registerJob("draft", async (artistId) => {
     setStage(artistId, "extracting");
 
     const request = extractionRequest({
-      scraped,
+      // Kaynak e-postası Claude'a gitmez: taslağın başka bir alanına yazılıp
+      // Artelivo'ya ulaşmasın (yalnız `contacts`'ta durur).
+      scraped: scraped.structured ? { ...scraped, structured: { ...scraped.structured, email: null } } : scraped,
       name: artist.name,
       instagramUrl: artist.instagram_url,
       city: null,
@@ -663,7 +670,7 @@ function threadsHandle(artist: Artist): string {
 // Instagram onayından sonra (kullanıcı, 2026-10-23): kaynak profili, Instagram
 // bio'su ve oradan gidilen sayfalarda e-posta ve link arar (src/discover).
 
-registerJob("discover", async (artistId) => {
+registerJob("discover", async (artistId): Promise<JobOutcome> => {
   const artist = db
     .prepare("SELECT * FROM artists WHERE id = ?")
     .get(artistId) as Artist | undefined;
@@ -674,15 +681,21 @@ registerJob("discover", async (artistId) => {
   if (!c.sourceChecked && adapter.contactInfo) {
     const info = await adapter.contactInfo(page, artist.source_url).catch(() => null);
     if (info) {
-      if (info.email) addEmail(c, info.email, adapter.label, artist.name);
-      for (const e of extractEmails(info.text)) addEmail(c, e, adapter.label, artist.name);
+      if (info.email) addEmail(c, info.email, adapter.label, artist.name, true);
+      for (const e of extractEmails(info.text)) addEmail(c, e, adapter.label, artist.name, true);
+      for (const p of extractPhones(info.text.replace(/</g, " "))) addPhone(c, p, adapter.label);
       for (const url of info.links) addLink(c, url, adapter.label);
     }
     c.sourceChecked = true;
   }
-  if (!c.igChecked) {
-    // Onay penceresinde okunamadıysa (eski onaylar): profil bir kez açılır.
-    await randomPause(3, 8);
+  // Onay penceresinde okunamadıysa (eski onaylar): profil bir kez açılır. Bu
+  // bir Instagram isteğidir: DM ile aynı bekleme ve günlük sınır (ayarlardan).
+  const settings = getSettings();
+  const igBudget = !c.igChecked && countToday("ig_profile_visit") < settings.igDmPerDay;
+  if (igBudget && nextDmAt() > Date.now()) return { deferUntil: new Date(nextDmAt()) };
+  if (!c.igChecked && !igBudget) logEvent("ig_profile_visit_skipped", { artistId });
+  if (igBudget) {
+    logEvent("ig_profile_visit", { artistId });
     try {
       const info = await visitProfileInfo(page, handleOf(artist.instagram_url));
       if (info) applyIgInfo(c, info, artist.name);
@@ -693,6 +706,8 @@ registerJob("discover", async (artistId) => {
         notify("Artelivo Davet", "Instagram engel/doğrulama gösterdi — kuyruk durduruldu.");
       }
       throw error;
+    } finally {
+      scheduleNextDm(settings.igDmDelayMin, settings.igDmDelayMax);
     }
     c.igChecked = true;
   }
@@ -704,6 +719,7 @@ registerJob("discover", async (artistId) => {
   ].filter(Boolean);
   // İki tur: siteler/link sayfaları taranır, sonra bulunan platform profilleri
   // incelenir; platformda yeni bir site çıkarsa ikinci turda o da taranır.
+  const owned = ownedBy(ident);
   const crawled = new Set<string>();
   const inspected = new Set<string>();
   let pages = 0;
@@ -714,7 +730,16 @@ registerJob("discover", async (artistId) => {
     if (seeds.length && pages < MAX_PAGES) {
       const found = await crawl(seeds, workTab, ident, MAX_PAGES - pages);
       pages += found.pages;
-      for (const e of found.emails) addEmail(c, e.value, e.from, artist.name);
+      // Sanatçıya ait sayfadaki (adını/kullanıcı adını taşıyan) adres: sitenin kendi
+      // alan adındaysa ya da sayfa bir link sayfasıysa güvenilir. Galeri sitesi değil.
+      for (const e of found.emails) {
+        const place = `https://${e.from}`;
+        const domain = e.value.split("@")[1] ?? "";
+        const host = hostOf(place);
+        const own = owned(place) && (isAggregator(place) || host === domain || host.endsWith(`.${domain}`));
+        addEmail(c, e.value, e.from, artist.name, own);
+      }
+      for (const p of found.phones) addPhone(c, p.value, p.from);
       for (const l of found.links) addLink(c, l.url, l.from);
     }
     // Bu turda açılan ya da bilerek açılmayan siteler sonraki turda yeniden taranmaz.
@@ -724,7 +749,10 @@ registerJob("discover", async (artistId) => {
     );
     if (!platforms.length && round > 0) break;
     for (const l of platforms.slice(0, 6)) {
+      if (pages >= MAX_PAGES) break;
       inspected.add(urlKey(l.url));
+      // Sanatçının kendi verdiği hesap mı: bio'dan/kaynaktan geldi ya da adını taşıyor.
+      const ownAccount = l.from === "Instagram bio" || l.from === adapter.label || l.from === "Saatchi" || owned(l.url);
       if (l.label === "Facebook") {
         if (!fbAllowed) continue;
         const fb = await readFacebookContact(page, l.url).catch(() => null);
@@ -734,7 +762,8 @@ registerJob("discover", async (artistId) => {
           logEvent("facebook_login_needed", { artistId });
           continue;
         }
-        for (const e of fb?.emails ?? []) addEmail(c, e, "Facebook", artist.name);
+        for (const e of fb?.emails ?? []) addEmail(c, e, "Facebook", artist.name, ownAccount);
+        for (const ph of fb?.phones ?? []) addPhone(c, ph, "Facebook");
         for (const u of fb?.links ?? []) addLink(c, u, "Facebook");
         await randomPause(2, 5);
         continue;
@@ -744,7 +773,9 @@ registerJob("discover", async (artistId) => {
           ? await readPinterest(l.url).catch(() => null)
           : await readPlatformPage(l.url, workTab, ident).catch(() => null);
       pages++;
-      for (const e of res?.emails ?? []) addEmail(c, e, l.label, artist.name);
+      // Pinterest'in iletişim alanını hesap sahibi girer; diğer platform
+      // sayfalarındaki adresler (yorumlar, başka hesaplar) yalnız adla eşleşirse.
+      for (const e of res?.emails ?? []) addEmail(c, e, l.label, artist.name, ownAccount && l.label === "Pinterest");
       for (const ph of res?.phones ?? []) addPhone(c, ph, l.label);
       for (const u of res?.links ?? []) addLink(c, u, l.label);
     }
@@ -801,9 +832,14 @@ registerJob("email", async (artistId): Promise<JobOutcome> => {
     .prepare("SELECT * FROM email_messages WHERE artist_id = ?")
     .get(artistId) as { to_addr: string; status: string } | undefined;
   const message = db
-    .prepare("SELECT text FROM dm_messages WHERE artist_id = ?")
-    .get(artistId) as { text: string } | undefined;
+    .prepare("SELECT text, status FROM dm_messages WHERE artist_id = ?")
+    .get(artistId) as { text: string; status: string } | undefined;
   if (!artist?.invite_id || !row || !message || row.status === "sent") return;
+  // Mesaj geri çekildiyse (sıradan çıkarıldı, taslağa döndü) e-posta da gitmez.
+  if (message.status === "draft") {
+    db.prepare("DELETE FROM email_messages WHERE artist_id = ? AND status = 'waiting'").run(artistId);
+    return;
+  }
   const setRow = (status: string, error: string | null) =>
     db.prepare(
       "UPDATE email_messages SET status = ?, error = ?, updated_at = datetime('now') WHERE artist_id = ?",
@@ -813,7 +849,10 @@ registerJob("email", async (artistId): Promise<JobOutcome> => {
     setRow("unverified", "Gönderim yarıda kaldı — info@artelivo.com Gönderilmiş klasörüne bak.");
     return;
   }
-  if (!smtpReady()) throw new Error("E-posta ayarları yok (.env SMTP_*).");
+  if (!smtpReady()) {
+    setRow("failed", "E-posta ayarları yok (.env SMTP_*).");
+    throw new Error("E-posta ayarları yok (.env SMTP_*).");
+  }
   if (countToday("email_sent") >= settings.emailPerDay) {
     setRow("waiting", "Günlük e-posta sınırı doldu — yarın sabah gönderilecek.");
     return { deferUntil: tomorrowMorning() };
@@ -834,8 +873,14 @@ registerJob("email", async (artistId): Promise<JobOutcome> => {
     ).run(artistId);
     logEvent("email_sent", { artistId });
   } catch (error) {
-    setRow("failed", error instanceof Error ? error.message : String(error));
-    throw error;
+    // Adres yalnız sanatçının satırında kalır: iş/olay kaydına (davet kapanınca
+    // silinmez) adressiz hata yazılır (KVKK).
+    const text = (error instanceof Error ? error.message : String(error))
+      .split(row.to_addr)
+      .join("<alıcı>")
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "<adres>");
+    setRow("failed", text);
+    throw new Error(text);
   } finally {
     const lo = Math.max(0, Math.min(settings.emailDelayMin, settings.emailDelayMax));
     const hi = Math.max(settings.emailDelayMin, settings.emailDelayMax);
@@ -952,10 +997,14 @@ export async function syncWithArtelivo(): Promise<{ changed: number }> {
     else if (record.status === "DRAFT" && artist.stage === "preview_approved")
       next = "drafted";
     if (CLOSED_STAGES.has(next)) {
-      // ⚠️ KVKK: davet kapandı (aldı / istemedi / süresi doldu / silindi).
-      // Ad, linkler ve mesaj metni artık tutulmaz; yalnız kişi bilgisi
-      // içermeyen bir sayaç ve "taranmasın" özeti kalır.
+      // Davet kapandı (aldı / istemedi / süresi doldu / silindi). Taslak,
+      // iletişim bilgisi ve mesaj metni gider; "Davet sonuçları" için yalnız
+      // ad ve linkler `invite_outcomes`'ta kalır (kullanıcı 2026-10-23).
       db.transaction(() => {
+        db.prepare(
+          `INSERT INTO invite_outcomes (outcome, name, instagram_url, source_url, sent_at)
+           VALUES (?, ?, ?, ?, (SELECT sent_at FROM dm_messages WHERE artist_id = ?))`,
+        ).run(next, artist.name, artist.instagram_url, artist.source_url, artist.id);
         markSeen(artist.source, artist.source_url, `invite_${next}`);
         db.prepare("DELETE FROM artists WHERE id = ?").run(artist.id);
         logEvent("invite_closed", { outcome: next });
