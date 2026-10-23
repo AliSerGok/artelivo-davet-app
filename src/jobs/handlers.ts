@@ -874,6 +874,8 @@ registerJob("email", async (artistId): Promise<JobOutcome> => {
     db.prepare(
       "UPDATE email_messages SET status = 'sent', error = NULL, sent_at = datetime('now'), updated_at = datetime('now') WHERE artist_id = ?",
     ).run(artistId);
+    // Davet e-postayla ulaştı: DM gitmese de sanatçı gönderilenlere geçer (kullanıcı, 2026-10-23).
+    if (artist.stage === "dm_ready") setStage(artistId, "dm_sent", { error: null });
     logEvent("email_sent", { artistId });
   } catch (error) {
     // Adres yalnız sanatçının satırında kalır: iş/olay kaydına (davet kapanınca

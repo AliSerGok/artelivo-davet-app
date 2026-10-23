@@ -46,13 +46,13 @@ penceresini kapatmak uygulamayı kapatır.
    oluşur (Saatchi'deki her şey MAPPING.md kurallarıyla alınır).
 4. **"Seçililerin önizlemelerini aç"** → ana tarayıcında (Artelivo'ya yönetici girişli)
    önizlemeler açılır → her birinde **"Onayla"**. "Durumları yenile" ile burada da
-   "Önizleme onaylı" görünür; sanatçı **Bağlantısı taranmayan** sekmesine geçer.
-   Seç → **"Bağlantıları tara"** → e-posta/link bulunur, sanatçı **Bağlantısı taranan**
-   sekmesine geçer. Tarama hiçbir şey göndermez.
-   Sekmeler akışın sırasıdır: Taslağı oluşturulmayan → Taslağı oluşturulan → Bağlantısı
-   taranmayan → Bağlantısı taranan → Mesajı hazır → Mesaj gönderilen.
+   "Önizleme onaylı" görünür.
+   Akış sekmeleri sırayladır: Taslağı oluşturulmayan → Taslağı oluşturulan → Taslağı
+   onaylanan → Mesajı hazır → Mesaj gönderilen. Yanlarında, mesajı henüz gönderilmemiş
+   herkes için **Bağlantısı taranmayan / taranan** sekmeleri: taranmayanları seç → **"Bağlantıları
+   tara"** → e-posta/link bulunur, biten taranan sekmesine geçer. Tarama hiçbir şey göndermez.
 5. Seç → **"Mesaj hazırla"** → **Mesajlar**'da her mesajı oku, istersen düzelt ya da
-   **"Mesajı sil"** (sanatçı Bağlantısı taranan sekmesine döner).
+   **"Mesajı sil"** (sanatçı Taslağı onaylanan sekmesine döner).
    Davet linki mesaj hazırlanırken alınır ve mesajın içine yazılır (30 gün o an başlar;
    mesajları göndermeye yakın hazırla). Elle düzenlerken linki silersen gönderimde sona eklenir.
 6. **"Seçilileri gönder"** → her biri için link alınır, Instagram'da profile gidilip DM

@@ -127,7 +127,7 @@ td .muted,.muted{color:var(--muted)}.small{font-size:12px}.nowrap{white-space:no
 .primary{background:var(--accent);color:var(--accent-fg)}.primary:hover{filter:brightness(1.07)}
 .secondary{background:var(--panel);color:var(--fg);border-color:var(--line)}.secondary:hover{background:var(--hover)}
 .subtle{background:transparent;color:var(--muted);padding:6px 9px}.subtle:hover{background:var(--hover);color:var(--fg)}
-.danger{background:transparent;color:var(--bad);padding:6px 9px}.danger:hover{background:var(--bad-bg)}
+.danger{background:transparent;color:var(--bad);padding:6px 9px}.danger:hover,.danger.armed{background:var(--bad-bg)}
 button:disabled,.btn[aria-disabled=true]{opacity:.45;cursor:not-allowed;transform:none}
 button.loading{opacity:.85;cursor:progress}
 input,select,textarea{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 10px}
@@ -197,7 +197,7 @@ function busyEditing(){var a=document.activeElement;if(a&&a.matches&&a.matches('
 if($$('main textarea,main input[type=text],main input[type=number],main input:not([type])').some(function(x){return x.value!==x.defaultValue}))return true;
 // Açılır kutu: odak gitse de seçim değiştiyse yenileme beklesin (yoksa seçim varsayılana döner).
 return $$('main select').some(function(x){var d=Array.prototype.findIndex.call(x.options,function(o){return o.defaultSelected});return x.selectedIndex!==(d<0?0:d)});}
-async function refresh(){if(refreshing||busyEditing()||$('button.loading'))return false;refreshing=true;try{
+async function refresh(){if(refreshing||busyEditing()||$('button.loading,button.armed'))return false;refreshing=true;try{
 var r=await fetch(location.href);if(!r.ok||r.redirected)return false;
 var doc=new DOMParser().parseFromString(await r.text(),'text/html');var next=doc.querySelector('main');if(!next)return false;
 var checked={};$$('main input[type=checkbox]:checked').forEach(function(x){checked[x.name+'='+x.value]=1});
@@ -229,6 +229,12 @@ document.addEventListener('submit',function(e){if(e.defaultPrevented)return;var 
 if(b){b.classList.add('loading');b.innerHTML='<i class="spin"></i>'+esc(b.dataset.busy||b.textContent.trim())}
 // form="…" ile dışarıdan bağlı düğmeler de: form.elements hepsini kapsar.
 setTimeout(function(){Array.prototype.forEach.call(f.elements,function(x){if(x.tagName==='BUTTON')x.disabled=true});if(b)b.disabled=true},0)});
+// Silme gibi düğmeler iki basışla onaylanır: arayüz Playwright'ın Chrome'unda
+// açıldığından confirm() kendiliğinden "hayır" döner (diyalog kapatılır).
+document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('button[data-confirm]');if(!b||b.dataset.armed)return;
+e.preventDefault();b.dataset.armed='1';var old=b.innerHTML;b.textContent='Emin misin? Tekrar bas';b.classList.add('armed');
+toast('Onay gerekiyor',b.dataset.confirm,'warn',4000);
+setTimeout(function(){if(!b.classList.contains('loading')){delete b.dataset.armed;b.classList.remove('armed');b.innerHTML=old}},4000)},true);
 window.addEventListener('pageshow',function(e){if(e.persisted)location.reload()});
 document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[target="_blank"]');if(!a)return;e.preventDefault();
 var f=new FormData();f.append('url',a.href);fetch('/open-external',{method:'POST',body:f});toast('Ana tarayıcında açıldı',a.textContent.trim(),'info',2500)});

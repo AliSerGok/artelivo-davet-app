@@ -172,6 +172,11 @@ const MIGRATIONS: string[] = [
     closed_at     TEXT NOT NULL DEFAULT (datetime('now'))
   );
   `,
+  // 2026-10-23: davet e-postası gittiyse DM gitmese de davet gönderilmiştir (kullanıcı).
+  `
+  UPDATE artists SET stage = 'dm_sent', error = NULL, updated_at = datetime('now')
+   WHERE stage = 'dm_ready' AND id IN (SELECT artist_id FROM email_messages WHERE status = 'sent');
+  `,
 ];
 
 function migrate(): void {

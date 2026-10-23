@@ -145,19 +145,22 @@ interface TabDef {
 }
 
 /**
- * Sanatçılar sekmeleri (kullanıcı, 2026-10-20). Sıra = akışın sırası; her
- * sanatçı tek bir akış sekmesinde. Önizlemesi onaylanan, bağlantısı taranmadan
- * mesaja geçmez (kullanıcı, 2026-10-23: taranan/taranmayan ayrı).
+ * Sanatçılar sekmeleri (kullanıcı, 2026-10-20). Akış sekmeleri akışın
+ * sırasıyla; her sanatçı tek birinde. Tarama sekmeleri aşamadan bağımsız
+ * (kullanıcı, 2026-10-23), ama mesajı gönderilenler girmez: onlarla iş bitti.
  */
+const OPEN_STAGES = ["approved", "draft_failed", "ineligible", "scraping", "extracting", "drafted", "preview_approved", "dm_ready"];
 const ARTIST_TABS: TabDef[] = [
   { key: "bekleyen", label: "Taslağı oluşturulmayan", stages: ["approved", "draft_failed", "ineligible", "scraping", "extracting"] },
   { key: "olusturulan", label: "Taslağı oluşturulan", stages: ["drafted"] },
-  { key: "taranmayan", label: "Bağlantısı taranmayan", stages: ["preview_approved"], scanned: false },
-  { key: "taranan", label: "Bağlantısı taranan", stages: ["preview_approved"], scanned: true },
+  { key: "onaylanan", label: "Taslağı onaylanan", stages: ["preview_approved"] },
   { key: "hazir", label: "Mesajı hazır", stages: ["dm_ready"] },
   { key: "gonderilen", label: "Mesaj gönderilen", stages: ["dm_sent", "claimed", "declined", "expired", "withdrawn"] },
+  { key: "taranmayan", label: "Bağlantısı taranmayan", stages: OPEN_STAGES, scanned: false },
+  { key: "taranan", label: "Bağlantısı taranan", stages: OPEN_STAGES, scanned: true },
   { key: "tumu", label: "Tümü", stages: null },
 ];
+const SIDE_TABS = ["taranmayan", "taranan", "tumu"];
 
 function tabBar(base: string, tabs: Array<{ key: string; label: string; count: number }>, active: string): Raw {
   return html`<nav class="tabs">
@@ -555,8 +558,8 @@ app.get("/", (c) => {
                       ${stalled
                         ? html`<form method="post" action="/runs/${r.id}/resume" class="inline"><button class="secondary" data-busy="Sıraya alınıyor">Devam ettir</button></form>`
                         : ""}
-                      <form method="post" action="/runs/${r.id}/delete" class="inline" onsubmit="return confirm('Tur #${r.id} ve karar verilmemiş adayları silinsin mi?')">
-                        <button class="danger" title="Turu sil">Sil</button>
+                      <form method="post" action="/runs/${r.id}/delete" class="inline">
+                        <button class="danger" title="Turu sil" data-confirm="Tur #${r.id} ve karar verilmemiş adayları silinir.">Sil</button>
                       </form>
                     </td>
                   </tr>`;
@@ -727,26 +730,26 @@ app.get("/artists", (c) => {
   const counts = ARTIST_TABS.map((t) => ({ ...t, count: rows.filter((r) => inTab(t, r)).length }));
   // Sekme seçilmediyse: akışta işi olan ilk sekme.
   const requested = ARTIST_TABS.find((t) => t.key === c.req.query("tab"));
-  const tab = requested ?? counts.find((t) => t.count > 0 && t.key !== "tumu") ?? ARTIST_TABS[0]!;
+  const tab = requested ?? counts.find((t) => t.count > 0 && !SIDE_TABS.includes(t.key)) ?? ARTIST_TABS[0]!;
   const shown = rows.filter((r) => inTab(tab, r));
-  const can = (action: "draft" | "preview" | "discover" | "dm") =>
-    tab.key === "tumu" ||
+  const can = (action: "draft" | "preview" | "dm") =>
+    SIDE_TABS.includes(tab.key) ||
     (action === "draft" && tab.key === "bekleyen") ||
-    (action === "preview" && ["olusturulan", "taranmayan", "taranan"].includes(tab.key)) ||
-    (action === "discover" && ["taranmayan", "taranan", "hazir", "gonderilen"].includes(tab.key)) ||
-    (action === "dm" && ["taranan", "hazir"].includes(tab.key));
+    (action === "preview" && ["olusturulan", "onaylanan"].includes(tab.key)) ||
+    (action === "dm" && ["onaylanan", "hazir"].includes(tab.key));
   // Akıştaki adımın düğmesi öne çıkar.
   const lead = (action: string) =>
-    ({ bekleyen: "draft", olusturulan: "preview", taranmayan: "discover", taranan: "dm" })[tab.key] === action
+    ({ bekleyen: "draft", olusturulan: "preview", onaylanan: "dm", taranmayan: "discover" })[tab.key] === action
       ? "primary"
       : "secondary";
   const HINT: Record<string, string> = {
     bekleyen: "Seç → Taslak oluştur. Taslaklar sırayla, kişi başı ~3 dk.",
     olusturulan: "Önizlemeleri aç, her birinde Onayla — onaylananlar kendiliğinden yan sekmeye geçer.",
-    taranmayan: "Önizlemesi onaylananlar. Seç → Bağlantıları tara; taranan yan sekmeye geçer. Tarama hiçbir şey göndermez.",
-    taranan: "Sonuç her satırın Bağlantılar kutusunda. Seç → Mesaj hazırla.",
+    onaylanan: "Seç → Mesaj hazırla. Mesajlar, Mesajlar sayfasında okunup sen gönder deyince gider.",
     hazir: "Mesajı yazıldı; Mesajlar sayfasında okunup sen gönder deyince gider.",
     gonderilen: "Mesajı gitmiş sanatçılar; sahiplenen / istemeyen / süresi dolan burada görünür, sonra kayıtları silinir.",
+    taranmayan: "Mesajı henüz gönderilmemiş ve bağlantı taraması bitmemiş herkes. Seç → Bağlantıları tara; biten Bağlantısı taranan'a geçer. Tarama hiçbir şey göndermez.",
+    taranan: "Taraması bitenler; sonuç her satırın Bağlantılar kutusunda. Az sayfa açılmışsa yeniden taranabilir.",
     tumu: "Bütün sanatçılar.",
   };
   return c.html(
@@ -765,7 +768,7 @@ app.get("/artists", (c) => {
             <span class="selcount zero" data-selcount>Seçim yok</span>
             ${can("draft") ? html`<button class="${lead("draft")}" formaction="/artists/draft" data-needs-selection data-busy="Sıraya alınıyor">Taslak oluştur</button>` : ""}
             ${can("preview") ? html`<button class="${lead("preview")}" formaction="/artists/open-previews" data-needs-selection data-busy="Açılıyor">Önizlemeleri aç</button>` : ""}
-            ${can("discover") ? html`<button class="${lead("discover")}" formaction="/artists/discover" data-needs-selection data-busy="Sıraya alınıyor">🔗 Bağlantıları tara</button>` : ""}
+            ${tab.key !== "gonderilen" ? html`<button class="${lead("discover")}" formaction="/artists/discover" data-needs-selection data-busy="Sıraya alınıyor">🔗 Bağlantıları tara</button>` : ""}
             ${can("dm") ? html`<button class="${lead("dm")}" formaction="/artists/prepare-dm" data-needs-selection data-busy="Claude mesajları yazıyor">Mesaj hazırla</button>` : ""}
             <span style="margin-left:auto"></span>
             <button class="subtle" formaction="/artists/sync" data-busy="Yenileniyor">↻ Artelivo'dan durumları yenile</button>
@@ -795,7 +798,7 @@ app.get("/artists", (c) => {
                       ${a.review_url ? html`<a class="btn subtle" href="${a.review_url}" target="_blank">Önizleme ↗</a>` : ""}
                       ${a.invite_id ? html`<a class="btn subtle" href="/artists/${a.id}/edit">Düzenle</a>` : ""}
                       <button class="danger" formaction="/artists/${a.id}/delete" data-busy="Siliniyor"
-                        onclick="return confirm('${a.invite_id ? "Artelivo'daki taslak ve bu kayıt silinsin mi?" : "Kayıt silinsin mi?"}')">Sil</button>
+                        data-confirm="${a.invite_id ? "Artelivo'daki taslak ve bu kayıt silinir." : "Kayıt silinir."}">Sil</button>
                     </td>
                   </tr>`;
                 })}
@@ -1100,9 +1103,11 @@ app.get("/messages", (c) => {
   }>;
   const s = getSettings();
   const today = countToday("ig_dm");
-  // Sekmeler (kullanıcı, 2026-10-20): gönderilmeyen / gönderilen.
-  const unsent = rows.filter((m) => m.status !== "sent");
-  const sent = rows.filter((m) => m.status === "sent");
+  // Sekmeler (kullanıcı, 2026-10-20): gönderilmeyen / gönderilen. Davet
+  // e-postayla gittiyse DM gitmese de gönderilmiştir (kullanıcı, 2026-10-23).
+  const isSent = (m: (typeof rows)[number]) => m.status === "sent" || m.email_status === "sent";
+  const unsent = rows.filter((m) => !isSent(m));
+  const sent = rows.filter(isSent);
   const tabKey = c.req.query("tab") === "gonderilen" ? "gonderilen" : "gonderilmeyen";
   const shown = tabKey === "gonderilen" ? sent : unsent;
   return c.html(
@@ -1131,7 +1136,7 @@ app.get("/messages", (c) => {
             ? html`<div style="padding:16px;display:grid;gap:14px">
               ${shown.map((m) => {
                 const st = DM_STATUS[m.status] ?? { label: m.status, tone: "neutral" as Tone };
-                const locked = ["sent", "unverified", "sending", "waiting"].includes(m.status);
+                const locked = ["sent", "unverified", "sending", "waiting"].includes(m.status) || m.email_status === "sent";
                 return html`<div class="card msg" style="margin:0">
                   <div class="msg-head">
                     <label class="row">
@@ -1154,7 +1159,7 @@ app.get("/messages", (c) => {
                   ${m.status === "unverified"
                     ? html`<div class="row"><span class="note warn">Önce Instagram'da sohbete bak.</span>
                         <button class="secondary" form="confirm_${m.artist_id}" data-busy="Kaydediliyor">Gönderildi say</button>
-                        <button class="danger" form="resend_${m.artist_id}" onclick="return confirm('Aynı kişiye ikinci bir mesaj gidebilir. Emin misin?')">Yine de tekrar gönder</button></div>`
+                        <button class="danger" form="resend_${m.artist_id}" data-confirm="Aynı kişiye ikinci bir mesaj gidebilir.">Yine de tekrar gönder</button></div>`
                     : ""}
                   ${locked
                     ? ""
@@ -1164,14 +1169,14 @@ app.get("/messages", (c) => {
                         <button class="subtle" form="lang_${m.artist_id}" data-busy="Claude yeniden yazıyor">${m.dm_lang === "en" ? "Türkçe yaz" : "İngilizce yaz"}</button>
                         <span style="margin-left:auto"></span>
                         <button class="danger" form="delete_${m.artist_id}" data-busy="Siliniyor"
-                          onclick="return confirm('Mesaj silinsin mi? Sanatçı Sanatçılar sayfasında kalır; yeniden mesaj hazırlanabilir.')">Mesajı sil</button>
+                          data-confirm="Mesaj silinir. Sanatçı Sanatçılar sayfasında kalır; yeniden mesaj hazırlanabilir.">Mesajı sil</button>
                       </div>`}
                 </div>`;
               })}
             </div>`
             : tabKey === "gonderilen"
               ? emptyState("Henüz gönderilen mesaj yok", "")
-              : emptyState("Gönderilecek mesaj yok", html`Sanatçılar › <b>Bağlantısı taranan</b> sekmesinde seçip <b>Mesaj hazırla</b>.`)}
+              : emptyState("Gönderilecek mesaj yok", html`Sanatçılar › <b>Taslağı onaylanan</b> sekmesinde seçip <b>Mesaj hazırla</b>.`)}
         </form>
         ${rows.map(
           (m) => html`<form id="save_${m.artist_id}" method="post" action="/messages/${m.artist_id}/save"></form>
@@ -1235,6 +1240,10 @@ app.post("/messages/:id/unqueue", (c) => {
 // aşamaya döner. Sıradaki önce sıradan çıkarılır, gitmiş/gidiyor olan silinmez.
 app.post("/messages/:id/delete", (c) => {
   const id = Number(c.req.param("id"));
+  // Davet e-postayla gitmişse mesaj kaydı kalır: silinirse sanatçı davet almamış görünür.
+  if (one("SELECT 1 FROM email_messages WHERE artist_id = ? AND status IN ('sent','sending','unverified')", id)) {
+    return back(c, backPath(c, "/messages"), "Silinemedi", "Davet e-postası gitti (ya da gidiyor); kayıt kalmalı.", "warn");
+  }
   const res = db.prepare("DELETE FROM dm_messages WHERE artist_id = ? AND status IN ('draft','failed')").run(id);
   if (!res.changes) {
     return back(c, backPath(c, "/messages"), "Silinemedi", "Mesaj sırada ya da gönderilmiş; sıradakini önce sıradan çıkar.", "warn");
@@ -1242,7 +1251,7 @@ app.post("/messages/:id/delete", (c) => {
   db.prepare("UPDATE jobs SET status = 'cancelled' WHERE kind IN ('dm','threads','email') AND ref_id = ? AND status = 'queued'").run(id);
   db.prepare("DELETE FROM email_messages WHERE artist_id = ? AND status NOT IN ('sent','sending','unverified')").run(id);
   db.prepare("UPDATE artists SET stage = 'preview_approved' WHERE id = ? AND stage = 'dm_ready'").run(id);
-  return back(c, backPath(c, "/messages"), `Mesaj silindi: ${artistName(id)}`, "Sanatçılar › Bağlantısı taranan/taranmayan sekmesinde.", "info");
+  return back(c, backPath(c, "/messages"), `Mesaj silindi: ${artistName(id)}`, "Sanatçılar › Taslağı onaylanan sekmesinde.", "info");
 });
 
 // Mesaj dili elle değişir (Türkiye'de yaşayan yabancı, yurt dışındaki Türk):
