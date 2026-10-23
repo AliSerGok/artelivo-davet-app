@@ -300,6 +300,43 @@ export async function visitProfileInfo(page: Page, handle: string): Promise<Prof
   return readProfileInfo(page);
 }
 
+// ─── Son gönderiye yorum (mesaj görülsün diye, kullanıcı 2026-10-24) ──────────
+// Yorumu kullanıcı kendi gönderir: uygulama gönderiyi açar, öneriyi kutuya
+// yazar, Enter'a BASMAZ. Otomatik yorum Instagram'ın en sıkı izlediği eylem.
+
+/** Profili açar, ilk (en yeni) gönderiye tıklar, yorum kutusuna öneriyi yazar. Gönderi yoksa profil açık kalır. */
+export async function openLatestPostForComment(page: Page, handle: string, suggestion: string): Promise<boolean> {
+  await ensureOnInstagram(page);
+  await page.goto(`${IG}/${handle}/`, { waitUntil: "domcontentloaded" });
+  await sleep(2500);
+  await assertNotBlocked(page, "profil açılırken");
+  // Sabitlenmiş gönderiler ızgarada önce gelir (raptiye simgesi): atlanır.
+  const posts = page.locator('main a[href*="/p/"], main a[href*="/reel/"]');
+  const n = Math.min(await posts.count(), 6);
+  if (n === 0) return false;
+  let post = posts.first();
+  for (let i = 0; i < n; i++) {
+    const pinned = await posts
+      .nth(i)
+      .locator('svg[aria-label*="Pinned" i], svg[aria-label*="Sabitlen" i]')
+      .count();
+    if (!pinned) {
+      post = posts.nth(i);
+      break;
+    }
+  }
+  await post.click();
+  await sleep(2000);
+  const box = page
+    .locator('textarea[aria-label*="yorum" i], textarea[aria-label*="comment" i], textarea[placeholder*="yorum" i], textarea[placeholder*="comment" i]')
+    .last();
+  if (await box.isVisible().catch(() => false)) {
+    await box.click().catch(() => {});
+    await page.keyboard.insertText(suggestion).catch(() => {});
+  }
+  return true;
+}
+
 // ─── Threads (Instagram'dan gitmeyen mesaj, kullanıcı 2026-10-23) ─────────────
 // threads.com/@kullanıcı → "Message" → threads.com/messages/t/… sohbeti;
 // yazı kutusu Instagram'ınkiyle aynı. Takipleşilmeyen kişiye "mesaj isteği"

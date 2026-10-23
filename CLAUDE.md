@@ -35,6 +35,13 @@ Yerel masaüstü aracı (Node 24 + TypeScript, `tsx` ile çalışır, build yok)
   güvenilir e-posta varsa **her durumda** davet e-postası da (`email` işi, info@artelivo.com, artemiz SMTP'si,
   metin DM'in aynısı; güvenilir adreslerin HEPSİNE tek e-posta, `inviteEmails`). Pinterest ve Saatchi mesaj kanalı DEĞİL. Davetler Instagram kanalında kalır
   (artemiz'in e-posta kanalı linki DM'e vermez).
+- Mesaj görülsün diye (kullanıcı 2026-10-24), Mesajlar'da ELLE: son gönderiye yorum (uygulama gönderiyi
+  ayrı sekmede açıp öneriyi kutuya yazar, Enter'a basmaz) ve telefon varsa WhatsApp (`wa.me`, davet metni
+  linkiyle, ana tarayıcıda; gönderen kullanıcı). Otomatik yorum/WhatsApp yok. TR sabit hatlar elenir.
+  WhatsApp'tan gönderildi kaydı daveti gönderilmiş sayar (ikinci davet gitmez).
+- Link açıldı mı (kullanıcı 2026-10-24): artemiz `ArtistInvite.openedAt` (istemciden, ilk açılış; IP/UA yok)
+  `/records`'tan senkronda `artists.link_opened_at`'e, kapanınca `invite_outcomes.opened_at`'e yazılır.
+- Bağlantı keşfi mesaj gittikten sonra da çalıştırılabilir (Gönderilen sekmesi; e-posta bulunursa elle gönderilir).
 - Taslak alan kuralları artemiz'deki `apps/web/agent/artist-invites/MAPPING.md`'den OKUNUR (kopya yok).
 
 ## Yapı

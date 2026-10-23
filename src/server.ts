@@ -3,8 +3,10 @@ import { execFile } from "node:child_process";
 
 import { serve } from "@hono/node-server";
 import { type Context, Hono } from "hono";
+import type { Page } from "playwright";
 
 import { usageSummary } from "./ai/claude.js";
+import { LINK_PLACEHOLDER } from "./ai/dm.js";
 import { ArtelivoError, artelivo } from "./artelivo/client.js";
 import { config, missingConfig } from "./config.js";
 import {
@@ -36,8 +38,9 @@ import {
   withBrowserForUi,
   startQueue,
 } from "./jobs/queue.js";
-import { DM_MAX, isLoggedIn, sendDm, splitForDm } from "./instagram/index.js";
+import { DM_MAX, isLoggedIn, openLatestPostForComment, sendDm, splitForDm } from "./instagram/index.js";
 import {
+  browser,
   closeBrowserIfOpen,
   openUiWindow,
   pruneScreenshots,
@@ -180,6 +183,9 @@ const ids = (body: Record<string, unknown>): number[] => {
 };
 
 const openInDefaultBrowser = (url: string) => execFile("open", [url], () => {});
+/** Artelivo'nun ISO zamanı → "24.10 12:05" (İstanbul). */
+const shortTime = (iso: string) =>
+  new Date(iso).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Istanbul" });
 const handleOf = (url: string) =>
   url.replace(/^https:\/\/(www\.)?instagram\.com\//, "@").replace(/\/$/, "");
 const one = <T>(sql: string, ...args: unknown[]) =>
@@ -747,7 +753,8 @@ app.get("/artists", (c) => {
     olusturulan: "Önizlemeleri aç, her birinde Onayla — onaylananlar kendiliğinden yan sekmeye geçer.",
     onaylanan: "Seç → Mesaj hazırla. Mesajlar, Mesajlar sayfasında okunup sen gönder deyince gider.",
     hazir: "Mesajı yazıldı; Mesajlar sayfasında okunup sen gönder deyince gider.",
-    gonderilen: "Mesajı gitmiş sanatçılar; sahiplenen / istemeyen / süresi dolan burada görünür, sonra kayıtları silinir.",
+    // Mesaj gittikten sonra da taranır (kullanıcı, 2026-10-24): e-posta mesaj isteklerine düşmez.
+    gonderilen: "Mesajı gitmiş sanatçılar; sahiplenen / istemeyen / süresi dolan burada görünür, sonra kayıtları silinir. Bağlantısı taranmamışları seç → Bağlantıları tara: e-posta bulunursa Mesajlar'dan davet e-postası gönderirsin.",
     taranmayan: "Mesajı henüz gönderilmemiş ve bağlantı taraması bitmemiş herkes. Seç → Bağlantıları tara; biten Bağlantısı taranan'a geçer. Tarama hiçbir şey göndermez.",
     taranan: "Taraması bitenler; sonuç her satırın Bağlantılar kutusunda. Az sayfa açılmışsa yeniden taranabilir.",
     tumu: "Bütün sanatçılar.",
@@ -768,7 +775,7 @@ app.get("/artists", (c) => {
             <span class="selcount zero" data-selcount>Seçim yok</span>
             ${can("draft") ? html`<button class="${lead("draft")}" formaction="/artists/draft" data-needs-selection data-busy="Sıraya alınıyor">Taslak oluştur</button>` : ""}
             ${can("preview") ? html`<button class="${lead("preview")}" formaction="/artists/open-previews" data-needs-selection data-busy="Açılıyor">Önizlemeleri aç</button>` : ""}
-            ${tab.key !== "gonderilen" ? html`<button class="${lead("discover")}" formaction="/artists/discover" data-needs-selection data-busy="Sıraya alınıyor">🔗 Bağlantıları tara</button>` : ""}
+            <button class="${lead("discover")}" formaction="/artists/discover" data-needs-selection data-busy="Sıraya alınıyor">🔗 Bağlantıları tara</button>
             ${can("dm") ? html`<button class="${lead("dm")}" formaction="/artists/prepare-dm" data-needs-selection data-busy="Claude mesajları yazıyor">Mesaj hazırla</button>` : ""}
             <span style="margin-left:auto"></span>
             <button class="subtle" formaction="/artists/sync" data-busy="Yenileniyor">↻ Artelivo'dan durumları yenile</button>
@@ -1076,10 +1083,111 @@ function emailLine(m: {
   ${m.email_error ? html`<div class="note ${m.email_status === "failed" ? "bad" : "warn"}">${m.email_error}</div>` : ""}`;
 }
 
+// ─── Mesaj görülsün diye (kullanıcı, 2026-10-24) ────────────────────────────
+// Takip edilmeyen hesabın DM'i "Mesaj istekleri"ne düşer. İki elle adım:
+// son gönderiye yorum (bildirimlerde görünür) ve telefon varsa WhatsApp.
+// İkisini de kullanıcı kendi gönderir; uygulama yalnız açar ve kaydeder.
+
+const COMMENTS: Record<"tr" | "en", string[]> = {
+  tr: [
+    "Eserleriniz çok etkileyici 🙏 Size {kanal} bir mesaj bıraktım, müsait olduğunuzda bakabilirseniz çok sevinirim.",
+    "Çalışmalarınıza hayran kaldım ✨ {kanal} küçük bir davet gönderdim, göz atarsanız çok mutlu olurum.",
+    "Ne güzel bir üretim 🌿 {kanal} size bir not bıraktım, vaktiniz olursa bakmanızı çok isterim.",
+  ],
+  en: [
+    "Your work is truly striking 🙏 I left you a message {kanal}, I'd love it if you could take a look when you have a moment.",
+    "I'm in awe of your work ✨ I sent you a small invitation {kanal}, it would mean a lot if you had a look.",
+    "Such beautiful work 🌿 I left you a note {kanal}, I'd be so glad if you could check it when you have time.",
+  ],
+};
+
+/** Kişiye göre değişen yorum önerisi; mesaj Threads'ten gittiyse orayı söyler. */
+function commentSuggestion(m: { artist_id: number; dm_lang: string | null; via: string | null }): string {
+  const lang = m.dm_lang === "en" ? "en" : "tr";
+  const kanal =
+    lang === "en"
+      ? m.via === "threads" ? "on Threads" : "in your DMs"
+      : m.via === "threads" ? "Threads'ten" : "DM'den";
+  const list = COMMENTS[lang];
+  return list[m.artist_id % list.length]!.replace("{kanal}", kanal);
+}
+
+/**
+ * WhatsApp'a uygun numaralar: Türkiye'de yalnız cep (5xx); sabit hatlar
+ * (galeri/kurum) ve örnek numaralar elenir. Ülke kodu olmayan 0'lı numara
+ * yalnız 05… ise Türk cebidir; değilse ve sanatçı Türkçe yazışılan biri
+ * değilse (ör. İngiltere 07…) elenmez, `noCode` ile gösterilir — wa.me ülke
+ * kodu ister. Hangisinin sanatçının olduğunu kaynağına bakıp kullanıcı seçer.
+ */
+function whatsappPhones(
+  contacts: string | null,
+  name: string,
+  lang: string | null,
+): { phones: Array<{ digits: string; from: string }>; noCode: Array<{ value: string; from: string }> } {
+  const phones: Array<{ digits: string; from: string }> = [];
+  const noCode: Array<{ value: string; from: string }> = [];
+  for (const p of readContacts(contacts, name).phones) {
+    let d = p.value.replace(/\D/g, "");
+    const plus = p.value.trim().startsWith("+");
+    if (!plus && /^05\d{9}$/.test(d)) d = `90${d.slice(1)}`;
+    else if (!plus && /^5\d{9}$/.test(d)) d = `90${d}`;
+    else if (!plus && /^0/.test(d)) {
+      // Türkçe yazışılan sanatçıda 0'lı, 5'le başlamayan numara TR sabit hattır.
+      if (lang !== "en") continue;
+      if (!noCode.some((o) => o.value === p.value)) noCode.push(p);
+      continue;
+    }
+    if (d.length < 10 || d.length > 15) continue;
+    if (/^90[^5]/.test(d) || /^1?1234567890$/.test(d)) continue;
+    if (!phones.some((o) => o.digits === d)) phones.push({ digits: d, from: p.from });
+  }
+  return { phones, noCode };
+}
+
+function followupLine(m: {
+  artist_id: number;
+  status: string;
+  name: string;
+  dm_lang: string | null;
+  via: string | null;
+  contacts: string | null;
+  email_status: string | null;
+  commented_at: string | null;
+  whatsapp_at: string | null;
+}) {
+  const dmSent = m.status === "sent";
+  const { phones, noCode } = whatsappPhones(m.contacts, m.name, m.dm_lang);
+  if (!dmSent && !m.whatsapp_at && !((phones.length || noCode.length) && (m.status === "failed" || m.email_status === "sent"))) return "";
+  const suggestion = commentSuggestion(m);
+  return html`<div class="row small" style="flex-wrap:wrap">
+    <span class="muted">Görülsün diye:</span>
+    ${dmSent
+      ? m.commented_at
+        ? html`${badge("Yorum yapıldı", "ok")} <span class="muted">${m.commented_at}</span>`
+        : html`<button class="subtle" form="post_${m.artist_id}" data-busy="Gönderi açılıyor">Son gönderiye yorum yap</button>
+            <button type="button" class="subtle" data-copy="${suggestion}">Öneriyi kopyala</button>
+            <button class="subtle" form="commented_${m.artist_id}" data-busy="Kaydediliyor">Yorum yaptım</button>`
+      : ""}
+    ${m.whatsapp_at
+      ? html`${badge("WhatsApp'tan gönderildi", "ok")} <span class="muted">${m.whatsapp_at}</span>`
+      : phones.length
+        ? html`${phones.map(
+            (p) => html`<button class="subtle" form="wa_${m.artist_id}" name="phone" value="${p.digits}" data-busy="WhatsApp açılıyor"
+              title="${p.from}">WhatsApp: +${p.digits} <span class="muted">(${p.from})</span></button>`,
+          )}
+            <button class="subtle" form="wasent_${m.artist_id}" data-busy="Kaydediliyor">WhatsApp'tan gönderdim</button>`
+        : ""}
+    ${!m.whatsapp_at && noCode.length
+      ? html`<span class="muted">Ülke kodu olmayan numara (WhatsApp için ülke kodu gerekir): ${noCode.map((p) => `${p.value} (${p.from})`).join(", ")}</span>`
+      : ""}
+  </div>
+  ${dmSent && !m.commented_at ? html`<div class="muted small">Öneri: “${suggestion}”</div>` : ""}`;
+}
+
 app.get("/messages", (c) => {
   const rows = db
     .prepare(
-      `SELECT m.*, a.name, a.instagram_url, a.stage, a.dm_lang, a.contacts,
+      `SELECT m.*, a.name, a.instagram_url, a.stage, a.dm_lang, a.contacts, a.link_opened_at,
               e.to_addr AS email_to, e.status AS email_status, e.error AS email_error, e.sent_at AS email_sent_at
          FROM dm_messages m JOIN artists a ON a.id = m.artist_id
          LEFT JOIN email_messages e ON e.artist_id = m.artist_id
@@ -1096,6 +1204,9 @@ app.get("/messages", (c) => {
     dm_lang: string | null;
     via: string | null;
     contacts: string | null;
+    commented_at: string | null;
+    whatsapp_at: string | null;
+    link_opened_at: string | null;
     email_to: string | null;
     email_status: string | null;
     email_error: string | null;
@@ -1105,7 +1216,8 @@ app.get("/messages", (c) => {
   const today = countToday("ig_dm");
   // Sekmeler (kullanıcı, 2026-10-20): gönderilmeyen / gönderilen. Davet
   // e-postayla gittiyse DM gitmese de gönderilmiştir (kullanıcı, 2026-10-23).
-  const isSent = (m: (typeof rows)[number]) => m.status === "sent" || m.email_status === "sent";
+  // WhatsApp'tan elle gönderildiyse de (kullanıcı, 2026-10-24).
+  const isSent = (m: (typeof rows)[number]) => m.status === "sent" || m.email_status === "sent" || !!m.whatsapp_at;
   const unsent = rows.filter((m) => !isSent(m));
   const sent = rows.filter(isSent);
   const tabKey = c.req.query("tab") === "gonderilen" ? "gonderilen" : "gonderilmeyen";
@@ -1136,17 +1248,18 @@ app.get("/messages", (c) => {
             ? html`<div style="padding:16px;display:grid;gap:14px">
               ${shown.map((m) => {
                 const st = DM_STATUS[m.status] ?? { label: m.status, tone: "neutral" as Tone };
-                const locked = ["sent", "unverified", "sending", "waiting"].includes(m.status) || m.email_status === "sent";
+                const locked = ["sent", "unverified", "sending", "waiting"].includes(m.status) || m.email_status === "sent" || !!m.whatsapp_at;
                 return html`<div class="card msg" style="margin:0">
                   <div class="msg-head">
                     <label class="row">
                       <input type="checkbox" name="ids" value="${m.artist_id}" ${locked ? raw("disabled") : ""} />
                       <b>${m.name}</b> <a class="muted" href="${m.instagram_url}" target="_blank">${handleOf(m.instagram_url)}</a>
                     </label>
-                    <span>${badge(m.dm_lang === "en" ? "İngilizce" : "Türkçe", "neutral")} ${badge(st.label, st.tone)}${m.via === "threads" ? html` ${badge("Threads'ten", "info")}` : ""}${m.sent_at ? html` <span class="muted small">${m.sent_at}</span>` : ""}</span>
+                    <span>${badge(m.dm_lang === "en" ? "İngilizce" : "Türkçe", "neutral")} ${badge(st.label, st.tone)}${m.via === "threads" ? html` ${badge("Threads'ten", "info")}` : ""}${m.link_opened_at ? html` ${badge(`Link açıldı ${shortTime(m.link_opened_at)}`, "ok")}` : ""}${m.sent_at ? html` <span class="muted small">${m.sent_at}</span>` : ""}</span>
                   </div>
                   ${m.error ? html`<div class="note bad">${m.error}</div>` : ""}
                   ${emailLine(m)}
+                  ${followupLine(m)}
                   ${(() => {
                     const parts = splitForDm(m.text);
                     return html`<div class="muted small">${m.text.length} karakter · Instagram'a ${parts.length} mesaj olarak gider (${parts.map((p) => p.length).join(" + ")}; her biri en çok ${DM_MAX})</div>`;
@@ -1186,11 +1299,84 @@ app.get("/messages", (c) => {
             <form id="resend_${m.artist_id}" method="post" action="/messages/${m.artist_id}/resend"></form>
             <form id="unqueue_${m.artist_id}" method="post" action="/messages/${m.artist_id}/unqueue"></form>
             <form id="delete_${m.artist_id}" method="post" action="/messages/${m.artist_id}/delete"></form>
-            <form id="email_${m.artist_id}" method="post" action="/messages/${m.artist_id}/email"></form>`,
+            <form id="email_${m.artist_id}" method="post" action="/messages/${m.artist_id}/email"></form>
+            <form id="post_${m.artist_id}" method="post" action="/messages/${m.artist_id}/open-post"></form>
+            <form id="commented_${m.artist_id}" method="post" action="/messages/${m.artist_id}/commented"></form>
+            <form id="wa_${m.artist_id}" method="post" action="/messages/${m.artist_id}/whatsapp"></form>
+            <form id="wasent_${m.artist_id}" method="post" action="/messages/${m.artist_id}/whatsapp-sent"></form>`,
         )}
       `,
     ),
   );
+});
+
+// Gönderi uygulamanın Chrome'unda (Instagram oturumu orada), ayrı sekmede
+// açılır: kuyruğun sekmesi yorum yazılırken başka yere gitmesin. Sekme tektir,
+// her basışta yeniden kullanılır.
+let commentPage: Page | null = null;
+app.post("/messages/:id/open-post", async (c) => {
+  const id = Number(c.req.param("id"));
+  const m = one<{ artist_id: number; dm_lang: string | null; via: string | null; instagram_url: string }>(
+    `SELECT m.artist_id, m.via, a.dm_lang, a.instagram_url FROM dm_messages m JOIN artists a ON a.id = m.artist_id
+      WHERE m.artist_id = ? AND m.status = 'sent'`,
+    id,
+  );
+  if (!m) return back(c, backPath(c, "/messages"), "Mesaj gönderilmemiş", "", "warn");
+  try {
+    const opened = await withBrowserForUi(async () => {
+      if (!commentPage || commentPage.isClosed()) commentPage = await (await browser()).newPage();
+      const page = commentPage;
+      await page.bringToFront();
+      return openLatestPostForComment(page, handleOf(m.instagram_url).slice(1), commentSuggestion(m));
+    });
+    return back(
+      c,
+      backPath(c, "/messages"),
+      opened ? "Son gönderi açıldı" : "Gönderi bulunamadı — profil açık",
+      opened ? "Öneri yorum kutusuna yazıldı; düzenleyip kendin gönder, sonra \"Yorum yaptım\"a bas." : "",
+      "info",
+    );
+  } catch (e) {
+    return back(c, backPath(c, "/messages"), "Gönderi açılamadı", e instanceof Error ? e.message : String(e), "bad");
+  }
+});
+app.post("/messages/:id/commented", (c) => {
+  const id = Number(c.req.param("id"));
+  db.prepare("UPDATE dm_messages SET commented_at = datetime('now') WHERE artist_id = ?").run(id);
+  return back(c, backPath(c, "/messages"), `Yorum kaydedildi: ${artistName(id)}`);
+});
+
+// WhatsApp sohbeti davet metniyle (link içinde) ana tarayıcıda açılır; gönderen kullanıcı.
+app.post("/messages/:id/whatsapp", async (c) => {
+  const id = Number(c.req.param("id"));
+  const phone = String((await c.req.parseBody())["phone"] ?? "");
+  const m = one<{ text: string; name: string; contacts: string | null; invite_id: string | null; dm_lang: string | null }>(
+    "SELECT m.text, a.name, a.contacts, a.invite_id, a.dm_lang FROM dm_messages m JOIN artists a ON a.id = m.artist_id WHERE m.artist_id = ?",
+    id,
+  );
+  if (!m?.invite_id || !whatsappPhones(m.contacts, m.name, m.dm_lang).phones.some((p) => p.digits === phone)) {
+    return back(c, backPath(c, "/messages"), "WhatsApp açılamadı", "Numara bu sanatçının kayıtlarında yok.", "warn");
+  }
+  try {
+    // Gönderimdeki kural: link metinde; eski yer tutucu değişir, yoksa sona eklenir.
+    const link = await artelivo.link(m.invite_id);
+    let text = m.text.split(LINK_PLACEHOLDER).join(link.claimUrl);
+    if (!text.includes(link.claimUrl)) text = `${text.trim()}\n\n${link.claimUrl}`;
+    openInDefaultBrowser(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`);
+    return back(c, backPath(c, "/messages"), "WhatsApp açıldı", "Mesaj hazır; kendin gönder, sonra \"WhatsApp'tan gönderdim\"e bas.", "info");
+  } catch (e) {
+    return back(c, backPath(c, "/messages"), "Davet linki alınamadı", e instanceof Error ? e.message : String(e), "bad");
+  }
+});
+app.post("/messages/:id/whatsapp-sent", (c) => {
+  const id = Number(c.req.param("id"));
+  db.prepare("UPDATE dm_messages SET whatsapp_at = datetime('now') WHERE artist_id = ?").run(id);
+  // Davet ulaştı: DM gitmese de sanatçı gönderilenlere geçer (e-postadaki kural).
+  db.prepare("UPDATE artists SET stage = 'dm_sent', error = NULL, updated_at = datetime('now') WHERE id = ? AND stage = 'dm_ready'").run(id);
+  // Sıradaki DM geri çekilir: aynı kişiye ikinci davet gitmesin.
+  db.prepare("UPDATE jobs SET status = 'cancelled' WHERE kind IN ('dm','threads') AND ref_id = ? AND status = 'queued'").run(id);
+  db.prepare("UPDATE dm_messages SET status = 'draft' WHERE artist_id = ? AND status = 'waiting'").run(id);
+  return back(c, backPath(c, "/messages"), `WhatsApp kaydedildi: ${artistName(id)}`);
 });
 
 app.post("/messages/:id/save", async (c) => {
@@ -1244,6 +1430,9 @@ app.post("/messages/:id/delete", (c) => {
   if (one("SELECT 1 FROM email_messages WHERE artist_id = ? AND status IN ('sent','sending','unverified')", id)) {
     return back(c, backPath(c, "/messages"), "Silinemedi", "Davet e-postası gitti (ya da gidiyor); kayıt kalmalı.", "warn");
   }
+  if (one("SELECT 1 FROM dm_messages WHERE artist_id = ? AND whatsapp_at IS NOT NULL", id)) {
+    return back(c, backPath(c, "/messages"), "Silinemedi", "Davet WhatsApp'tan gitti; kayıt kalmalı.", "warn");
+  }
   const res = db.prepare("DELETE FROM dm_messages WHERE artist_id = ? AND status IN ('draft','failed')").run(id);
   if (!res.changes) {
     return back(c, backPath(c, "/messages"), "Silinemedi", "Mesaj sırada ya da gönderilmiş; sıradakini önce sıradan çıkar.", "warn");
@@ -1283,9 +1472,11 @@ app.post("/messages/send", async (c) => {
   let n = 0;
   let mails = 0;
   for (const id of ids(await c.req.parseBody({ all: true }))) {
-    db.prepare(
-      "UPDATE dm_messages SET status = 'waiting', error = NULL WHERE artist_id = ? AND status IN ('draft','failed')",
+    // WhatsApp'tan gittiyse ikinci davet gitmez.
+    const res = db.prepare(
+      "UPDATE dm_messages SET status = 'waiting', error = NULL WHERE artist_id = ? AND status IN ('draft','failed') AND whatsapp_at IS NULL",
     ).run(id);
+    if (!res.changes) continue;
     enqueue("dm", id);
     // E-posta bulunduysa davet e-postası da (kullanıcı, 2026-10-23).
     if (queueEmail(id)) mails++;
@@ -1314,18 +1505,25 @@ app.get("/outcomes", async (c) => {
       syncError = String(e).slice(0, 200);
     });
   }
-  type Row = { name: string; instagram_url: string | null; source_url: string | null; sent_at: string | null; at: string };
+  type Row = {
+    name: string;
+    instagram_url: string | null;
+    source_url: string | null;
+    sent_at: string | null;
+    at: string;
+    opened_at: string | null;
+  };
   const closedRows = (outcome: string) =>
     db
       .prepare(
-        `SELECT name, instagram_url, source_url, sent_at, closed_at AS at
+        `SELECT name, instagram_url, source_url, sent_at, closed_at AS at, opened_at
          FROM invite_outcomes WHERE outcome = ? ORDER BY closed_at DESC`,
       )
       .all(outcome) as Row[];
   const pending = db
     .prepare(
       `SELECT a.name, a.instagram_url, a.source_url, COALESCE(m.sent_at, e.sent_at) AS sent_at,
-              COALESCE(m.sent_at, e.sent_at, a.updated_at) AS at
+              COALESCE(m.sent_at, e.sent_at, a.updated_at) AS at, a.link_opened_at AS opened_at
        FROM artists a
        LEFT JOIN dm_messages m ON m.artist_id = a.id
        LEFT JOIN email_messages e ON e.artist_id = a.id
@@ -1340,13 +1538,14 @@ app.get("/outcomes", async (c) => {
       <div style="padding:14px 14px 0"><h2>${title} ${badge(String(rows.length + unnamed), tone)}</h2><p class="muted small">${hint}</p></div>
       ${rows.length
         ? html`<table>
-            <thead><tr><th>Sanatçı</th><th>Mesaj gitti</th><th>${atLabel}</th></tr></thead>
+            <thead><tr><th>Sanatçı</th><th>Mesaj gitti</th><th>Linki açtı</th><th>${atLabel}</th></tr></thead>
             <tbody>
             ${rows.map(
               (r) => html`<tr>
                 <td><b>${r.name}</b>
                   <div class="muted small">${r.instagram_url ? html`<a href="${r.instagram_url}" target="_blank">${handleOf(r.instagram_url)}</a>` : ""}${r.instagram_url && r.source_url ? " · " : ""}${r.source_url ? html`<a href="${r.source_url}" target="_blank">Kaynak</a>` : ""}</div></td>
                 <td class="muted small nowrap">${r.sent_at ?? "—"}</td>
+                <td class="small nowrap">${r.opened_at ? badge(shortTime(r.opened_at), "ok") : html`<span class="muted">açmadı</span>`}</td>
                 <td class="muted small nowrap">${r.at}</td>
               </tr>`,
             )}
@@ -1370,7 +1569,14 @@ app.get("/outcomes", async (c) => {
         ${syncError ? html`<div class="callout warn"><div><b>Artelivo'ya ulaşılamadı</b> — son bilinen durum gösteriliyor. ${syncError}</div></div>` : ""}
         ${section("Onayladı", "Profilini aldı; artık Artelivo'da.", "ok", closedRows("claimed"), "claimed", "Aldığı an")}
         ${section("Sildi", "Taslağı istemedi; Artelivo'dan silindi.", "bad", closedRows("declined"), "declined", "Sildiği an")}
-        ${section("Beklemede", "Mesajı gitti, henüz karar vermedi (en eski önce).", "info", pending, null, "Bekliyor (başlangıç)")}
+        ${section(
+          "Beklemede",
+          `Mesajı gitti, henüz karar vermedi (en eski önce). ${pending.filter((r) => r.opened_at).length}/${pending.length} kişi linki açtı — açmayan mesajı görmemiş olabilir. Açılış, Artelivo'da bu özellik yayına girdikten sonrası için bilinir.`,
+          "info",
+          pending,
+          null,
+          "Bekliyor (başlangıç)",
+        )}
       `,
     ),
   );

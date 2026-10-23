@@ -81,6 +81,8 @@ export interface InviteRecord {
   instagramUrl: string | null;
   sourceUrl: string;
   reviewUrl: string;
+  /** Linkin tarayıcıda ilk açıldığı an (artemiz 2026-10-24); eski sunucuda alan yok. */
+  openedAt?: string | null;
   content?: unknown;
 }
 

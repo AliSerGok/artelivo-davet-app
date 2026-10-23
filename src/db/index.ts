@@ -177,6 +177,16 @@ const MIGRATIONS: string[] = [
   UPDATE artists SET stage = 'dm_sent', error = NULL, updated_at = datetime('now')
    WHERE stage = 'dm_ready' AND id IN (SELECT artist_id FROM email_messages WHERE status = 'sent');
   `,
+  // 2026-10-24: mesaj görülsün diye elle yapılanlar (kullanıcı): son gönderiye yorum, WhatsApp.
+  `
+  ALTER TABLE dm_messages ADD COLUMN commented_at TEXT;
+  ALTER TABLE dm_messages ADD COLUMN whatsapp_at TEXT;
+  `,
+  // 2026-10-24: davet linki açıldı mı (Artelivo `openedAt`); kapanan davette de kalsın.
+  `
+  ALTER TABLE artists ADD COLUMN link_opened_at TEXT;
+  ALTER TABLE invite_outcomes ADD COLUMN opened_at TEXT;
+  `,
 ];
 
 function migrate(): void {

@@ -238,6 +238,8 @@ setTimeout(function(){if(!b.classList.contains('loading')){delete b.dataset.arme
 window.addEventListener('pageshow',function(e){if(e.persisted)location.reload()});
 document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[target="_blank"]');if(!a)return;e.preventDefault();
 var f=new FormData();f.append('url',a.href);fetch('/open-external',{method:'POST',body:f});toast('Ana tarayıcında açıldı',a.textContent.trim(),'info',2500)});
+document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('button[data-copy]');if(!b)return;e.preventDefault();
+navigator.clipboard.writeText(b.dataset.copy).then(function(){toast('Kopyalandı',b.dataset.copy,'ok',2500)},function(){toast('Kopyalanamadı','','bad',2500)})});
 function updateSelection(){var n=$$('main input[name="ids"]:checked').length;$$('[data-selcount]').forEach(function(el){el.textContent=n?n+' seçili':'Seçim yok';el.classList.toggle('zero',!n)});
 $$('[data-needs-selection]').forEach(function(b){b.disabled=!n})}
 document.addEventListener('change',function(e){var t=e.target;if(t.matches&&t.matches('[data-check-all]'))$$('main input[name="ids"]:not(:disabled)').forEach(function(x){x.checked=t.checked});updateSelection()});

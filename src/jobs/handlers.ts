@@ -107,6 +107,8 @@ export interface Artist {
   invite_id: string | null;
   review_url: string | null;
   contacts: string | null;
+  /** Davet linkinin tarayıcıda ilk açıldığı an (Artelivo `openedAt`, 2026-10-24). */
+  link_opened_at: string | null;
 }
 
 function setRun(
@@ -1006,6 +1008,13 @@ export async function syncWithArtelivo(): Promise<{ changed: number }> {
   for (const artist of artists) {
     const record = byId.get(artist.invite_id as string);
     const end = ended.get(artist.invite_id as string);
+    // Link açıldı mı (Artelivo yalnız ilk açılışı tutar); kapanınca satır
+    // silindiği için son bilinen değer burada saklanır.
+    const openedAt = record?.openedAt ?? artist.link_opened_at;
+    if (openedAt && openedAt !== artist.link_opened_at) {
+      db.prepare("UPDATE artists SET link_opened_at = ? WHERE id = ?").run(openedAt, artist.id);
+      changed++;
+    }
     let next = artist.stage;
     if (end === "CLAIMED") next = "claimed";
     else if (end === "DECLINED") next = "declined";
@@ -1027,9 +1036,9 @@ export async function syncWithArtelivo(): Promise<{ changed: number }> {
       // ad ve linkler `invite_outcomes`'ta kalır (kullanıcı 2026-10-23).
       db.transaction(() => {
         db.prepare(
-          `INSERT INTO invite_outcomes (outcome, name, instagram_url, source_url, sent_at)
-           VALUES (?, ?, ?, ?, (SELECT sent_at FROM dm_messages WHERE artist_id = ?))`,
-        ).run(next, artist.name, artist.instagram_url, artist.source_url, artist.id);
+          `INSERT INTO invite_outcomes (outcome, name, instagram_url, source_url, sent_at, opened_at)
+           VALUES (?, ?, ?, ?, (SELECT sent_at FROM dm_messages WHERE artist_id = ?), ?)`,
+        ).run(next, artist.name, artist.instagram_url, artist.source_url, artist.id, openedAt ?? null);
         markSeen(artist.source, artist.source_url, `invite_${next}`);
         db.prepare("DELETE FROM artists WHERE id = ?").run(artist.id);
         logEvent("invite_closed", { outcome: next });
