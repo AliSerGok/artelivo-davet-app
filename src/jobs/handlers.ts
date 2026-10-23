@@ -550,21 +550,25 @@ export async function adoptExistingDraft(
  * Zaman veritabanında: uygulama kapanıp açılınca da bekleme sürer.
  */
 const NEXT_DM_KEY = "nextDmAt";
-function nextDmAt(): number {
-  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(NEXT_DM_KEY) as
+/** Keşifteki Instagram profil okumalarının kendi beklemesi (DM'den ayrı, 2026-10-24). */
+const NEXT_VISIT_KEY = "nextIgVisitAt";
+function nextAt(key: string): number {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as
     | { value: string }
     | undefined;
   return Number(row?.value ?? 0) || 0;
 }
-function scheduleNextDm(minSec: number, maxSec: number): void {
+function scheduleNext(key: string, minSec: number, maxSec: number): void {
   const lo = Math.max(0, Math.min(minSec, maxSec));
   const hi = Math.max(minSec, maxSec);
   const at = Date.now() + Math.round((lo + Math.random() * (hi - lo)) * 1000);
   db.prepare(
     `INSERT INTO settings (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-  ).run(NEXT_DM_KEY, String(at));
+  ).run(key, String(at));
 }
+const nextDmAt = () => nextAt(NEXT_DM_KEY);
+const scheduleNextDm = (minSec: number, maxSec: number) => scheduleNext(NEXT_DM_KEY, minSec, maxSec);
 
 /**
  * Davet mesajını gönderir. Instagram'da "Mesaj" düğmesi yoksa Threads'ten
@@ -577,8 +581,10 @@ async function deliver(artistId: number, via: "instagram" | "threads"): Promise<
     .get(artistId) as Artist | undefined;
   const message = db
     .prepare("SELECT * FROM dm_messages WHERE artist_id = ?")
-    .get(artistId) as { text: string; status: string } | undefined;
+    .get(artistId) as { text: string; status: string; whatsapp_at: string | null } | undefined;
   if (!artist?.invite_id || !message || message.status === "sent") return;
+  // Davet WhatsApp'tan elle gitti: "Tekrar dene"/yeniden gönder ikinci davet göndermez.
+  if (message.whatsapp_at) return;
   // Uygulama gönderim sırasında kapandıysa mesaj gitmiş olabilir: tekrar
   // gönderme, sana sor.
   if (message.status === "sending" || message.status === "unverified") {
@@ -694,21 +700,22 @@ registerJob("discover", async (artistId): Promise<JobOutcome> => {
     c.sourceChecked = true;
   }
   // Onay penceresinde okunamadıysa (eski onaylar) profil, sonra bio'da anılan
-  // hesaplar (en çok 3) birer kez açılır. Her biri bir Instagram isteğidir: DM
-  // ile aynı bekleme ve günlük sınır (ayarlardan); beklerken iş ertelenir.
+  // hesaplar (en çok 3) birer kez açılır. Her biri bir Instagram isteğidir:
+  // DM'den AYRI günlük sınır ve bekleme (ayarlardan, kullanıcı 2026-10-24) —
+  // keşif DM hakkını harcamaz, DM'leri bekletmez; beklerken iş ertelenir.
   const settings = getSettings();
   const own = handleOf(artist.instagram_url);
   if (c.igBio) addBioMentions(c, c.igBio); // bu özellikten önce okunmuş bio'lar
   const ownedMention = ownedBy([...nameTokens(artist.name), own]);
   let next: string | null = !c.igChecked ? own : (bioMentions(c, own)[0] ?? null);
   while (next) {
-    if (countToday("ig_profile_visit") >= settings.igDmPerDay) {
+    if (countToday("ig_profile_visit") >= settings.igVisitPerDay) {
       logEvent("ig_profile_visit_skipped", { artistId });
       break;
     }
-    if (nextDmAt() > Date.now()) {
+    if (nextAt(NEXT_VISIT_KEY) > Date.now()) {
       saveContacts(artistId, c); // okunanlar kaybolmasın
-      return { deferUntil: new Date(nextDmAt()) };
+      return { deferUntil: new Date(nextAt(NEXT_VISIT_KEY)) };
     }
     logEvent("ig_profile_visit", { artistId });
     try {
@@ -730,7 +737,7 @@ registerJob("discover", async (artistId): Promise<JobOutcome> => {
       if (next === own || error instanceof InstagramBlockedError) throw error;
       c.igVisited.push(next);
     } finally {
-      scheduleNextDm(settings.igDmDelayMin, settings.igDmDelayMax);
+      scheduleNext(NEXT_VISIT_KEY, settings.igVisitDelayMin, settings.igVisitDelayMax);
     }
     saveContacts(artistId, c);
     next = bioMentions(c, own)[0] ?? null;
@@ -1003,6 +1010,12 @@ export async function syncWithArtelivo(): Promise<{ changed: number }> {
       .filter((h) => h.inviteId)
       .map((h) => [h.inviteId as string, h.type]),
   );
+  // Kapanan davetin açılışı (satır silinince `/records`'ta yok). Ayrı istek:
+  // OPENED'ı tanımayan eski Artelivo sunucusunda senkron bozulmasın.
+  const { items: opens } = await artelivo.history(since, "OPENED").catch(() => ({ items: [] as typeof history }));
+  const openedEvents = new Map(
+    opens.filter((h) => h.inviteId).map((h) => [h.inviteId as string, h.at]),
+  );
 
   let changed = 0;
   for (const artist of artists) {
@@ -1010,7 +1023,7 @@ export async function syncWithArtelivo(): Promise<{ changed: number }> {
     const end = ended.get(artist.invite_id as string);
     // Link açıldı mı (Artelivo yalnız ilk açılışı tutar); kapanınca satır
     // silindiği için son bilinen değer burada saklanır.
-    const openedAt = record?.openedAt ?? artist.link_opened_at;
+    const openedAt = record?.openedAt ?? openedEvents.get(artist.invite_id as string) ?? artist.link_opened_at;
     if (openedAt && openedAt !== artist.link_opened_at) {
       db.prepare("UPDATE artists SET link_opened_at = ? WHERE id = ?").run(openedAt, artist.id);
       changed++;
@@ -1037,7 +1050,9 @@ export async function syncWithArtelivo(): Promise<{ changed: number }> {
       db.transaction(() => {
         db.prepare(
           `INSERT INTO invite_outcomes (outcome, name, instagram_url, source_url, sent_at, opened_at)
-           VALUES (?, ?, ?, ?, (SELECT sent_at FROM dm_messages WHERE artist_id = ?), ?)`,
+           VALUES (?, ?, ?, ?, (SELECT COALESCE(m.sent_at, m.whatsapp_at, e.sent_at) FROM artists a
+                                LEFT JOIN dm_messages m ON m.artist_id = a.id
+                                LEFT JOIN email_messages e ON e.artist_id = a.id WHERE a.id = ?), ?)`,
         ).run(next, artist.name, artist.instagram_url, artist.source_url, artist.id, openedAt ?? null);
         markSeen(artist.source, artist.source_url, `invite_${next}`);
         db.prepare("DELETE FROM artists WHERE id = ?").run(artist.id);

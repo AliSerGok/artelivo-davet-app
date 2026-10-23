@@ -939,12 +939,14 @@ app.post("/artists/:id/delete", async (c) => {
     id,
   );
   if (!a) return c.redirect("/artists");
-  const dm = one<{ status: string }>("SELECT status FROM dm_messages WHERE artist_id = ?", id);
+  const dm = one<{ status: string; whatsapp_at: string | null }>("SELECT status, whatsapp_at FROM dm_messages WHERE artist_id = ?", id);
   if (dm?.status === "sending") {
     return back(c, backPath(c, "/artists"), `Şu an mesajı gönderiliyor: ${a.name}`, "Gönderim bitince sil.", "warn");
   }
-  // DM gitti (ya da gitmiş olabilir): link sanatçıda — davete dokunulmaz.
-  const delivered = Boolean(dm && ["sent", "unverified"].includes(dm.status));
+  // Davet ulaştı (ya da ulaşmış olabilir) — DM, WhatsApp ya da e-postayla:
+  // link sanatçıda, davete dokunulmaz (kullanıcı 2026-10-24).
+  const mailed = one("SELECT 1 FROM email_messages WHERE artist_id = ? AND status IN ('sent','sending','unverified')", id);
+  const delivered = Boolean((dm && (["sent", "unverified"].includes(dm.status) || dm.whatsapp_at)) || mailed);
   // Sırada bekleyen DM'i iptal et: silinen kişiye mesaj gitmesin.
   db.prepare("UPDATE jobs SET status = 'cancelled' WHERE kind = 'dm' AND ref_id = ? AND status = 'queued'").run(id);
 
@@ -1370,11 +1372,16 @@ app.post("/messages/:id/whatsapp", async (c) => {
 });
 app.post("/messages/:id/whatsapp-sent", (c) => {
   const id = Number(c.req.param("id"));
+  // DM tam şu an gidiyorsa çalışan iş durdurulamaz: önce bitsin.
+  if (one("SELECT 1 FROM dm_messages WHERE artist_id = ? AND status = 'sending'", id)) {
+    return back(c, backPath(c, "/messages"), "Şu an DM gönderiliyor", "Bitince yeniden bas.", "warn");
+  }
   db.prepare("UPDATE dm_messages SET whatsapp_at = datetime('now') WHERE artist_id = ?").run(id);
   // Davet ulaştı: DM gitmese de sanatçı gönderilenlere geçer (e-postadaki kural).
   db.prepare("UPDATE artists SET stage = 'dm_sent', error = NULL, updated_at = datetime('now') WHERE id = ? AND stage = 'dm_ready'").run(id);
   // Sıradaki DM geri çekilir: aynı kişiye ikinci davet gitmesin.
-  db.prepare("UPDATE jobs SET status = 'cancelled' WHERE kind IN ('dm','threads') AND ref_id = ? AND status = 'queued'").run(id);
+  // Hata vermiş iş de: İşler'de "Tekrar dene" kalmasın.
+  db.prepare("UPDATE jobs SET status = 'cancelled' WHERE kind IN ('dm','threads') AND ref_id = ? AND status IN ('queued','failed')").run(id);
   db.prepare("UPDATE dm_messages SET status = 'draft' WHERE artist_id = ? AND status = 'waiting'").run(id);
   return back(c, backPath(c, "/messages"), `WhatsApp kaydedildi: ${artistName(id)}`);
 });
@@ -1402,9 +1409,12 @@ app.post("/messages/:id/confirm-sent", (c) => {
 });
 app.post("/messages/:id/resend", (c) => {
   const id = Number(c.req.param("id"));
-  db.prepare(
-    "UPDATE dm_messages SET status = 'waiting', error = NULL WHERE artist_id = ? AND status = 'unverified'",
+  const res = db.prepare(
+    "UPDATE dm_messages SET status = 'waiting', error = NULL WHERE artist_id = ? AND status = 'unverified' AND whatsapp_at IS NULL",
   ).run(id);
+  if (!res.changes) {
+    return back(c, backPath(c, "/messages"), "Yeniden gönderilmedi", "Davet WhatsApp'tan gitti (ya da mesaj doğrulanamadı durumunda değil).", "warn");
+  }
   enqueue("dm", id);
   return back(c, backPath(c, "/messages"), `Yeniden sıraya alındı: ${artistName(id)}`, "", "warn");
 });
@@ -1522,8 +1532,8 @@ app.get("/outcomes", async (c) => {
       .all(outcome) as Row[];
   const pending = db
     .prepare(
-      `SELECT a.name, a.instagram_url, a.source_url, COALESCE(m.sent_at, e.sent_at) AS sent_at,
-              COALESCE(m.sent_at, e.sent_at, a.updated_at) AS at, a.link_opened_at AS opened_at
+      `SELECT a.name, a.instagram_url, a.source_url, COALESCE(m.sent_at, m.whatsapp_at, e.sent_at) AS sent_at,
+              COALESCE(m.sent_at, m.whatsapp_at, e.sent_at, a.updated_at) AS at, a.link_opened_at AS opened_at
        FROM artists a
        LEFT JOIN dm_messages m ON m.artist_id = a.id
        LEFT JOIN email_messages e ON e.artist_id = a.id
@@ -1798,6 +1808,9 @@ const SETTING_LABEL: Record<keyof typeof DEFAULT_SETTINGS, string> = {
   igDmPerDay: "Günde en fazla DM",
   igDmDelayMin: "DM'ler arası en az bekleme (sn)",
   igDmDelayMax: "DM'ler arası en çok bekleme (sn)",
+  igVisitPerDay: "Keşifte günde en fazla Instagram profili (DM'den ayrı)",
+  igVisitDelayMin: "Profil okumaları arası en az bekleme (sn)",
+  igVisitDelayMax: "Profil okumaları arası en çok bekleme (sn)",
   minWorks: "Kaynakta en az eser (yeni tur varsayılanı)",
   maxWorks: "Kaynakta en çok eser (yeni tur varsayılanı)",
   emailPerDay: "Günde en fazla davet e-postası",

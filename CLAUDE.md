@@ -26,8 +26,10 @@ Yerel masaüstü aracı (Node 24 + TypeScript, `tsx` ile çalışır, build yok)
   Sanatçının verdiği platform linkleri de AÇILIR (kullanıcı: "linklere gidip iyice bak"): Pinterest profil
   verisi (`partner.contact_email/phone`, girişsiz), Facebook "İletişim bilgileri" (giriş ister), Threads/
   TikTok/YouTube/Behance sayfası. Yalnız X, LinkedIn, Instagram kaydedilir; istisna: Instagram bio'sunda
-  anılan @hesaplar (en çok 3) DM ile aynı sınır/beklemeyle açılır, e-postası yalnız hesap adı sanatçının
+  anılan @hesaplar (en çok 3) açılır, e-postası yalnız hesap adı sanatçının
   adını taşıyorsa güvenilir (kullanıcı 2026-10-23). Platformda çıkan site 2. turda taranır.
+  Keşifteki Instagram profil okumaları DM'den AYRI sınır/beklemeyle (`igVisitPerDay`, `igVisitDelay*`;
+  kullanıcı 2026-10-24: "günlük DM'den düşmesin").
   Telefonlar da (kullanıcı 2026-10-23): `tel:`, + ya da 0 ile başlayan 10–15 hane, WhatsApp linkinden numara;
   WhatsApp/Telegram linkleri sanatçının kendi sayfasında ad taşımasa da kaydedilir. Shopier platformdur.
 - Kanallar (kullanıcı 2026-10-23): Instagram DM (2026-10-24: DM'den önce profil takip edilir, aynı

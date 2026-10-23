@@ -113,12 +113,12 @@ export const artelivo = {
       "GET",
       `/records?status=DRAFT,APPROVED,INVITED&limit=500${ids ? "" : ""}`,
     ),
-  history: (since: string) =>
+  history: (since: string, types = "CLAIMED,DECLINED,EXPIRED,WITHDRAWN") =>
     agent<{
       items: Array<{ type: string; at: string; inviteId: string | null }>;
     }>(
       "GET",
-      `/history?type=CLAIMED,DECLINED,EXPIRED,WITHDRAWN&since=${encodeURIComponent(since)}&limit=500`,
+      `/history?type=${types}&since=${encodeURIComponent(since)}&limit=500`,
     ),
   /** Sahiplenme linki — YALNIZ link anahtarıyla. */
   link: (id: string) =>

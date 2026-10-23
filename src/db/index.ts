@@ -316,6 +316,13 @@ export const DEFAULT_SETTINGS = {
   /** DM'ler arası rastgele bekleme (sn). */
   igDmDelayMin: 90,
   igDmDelayMax: 240,
+  /**
+   * Bağlantı keşfinde Instagram profili okuma: DM'den AYRI günlük sınır ve
+   * bekleme (kullanıcı, 2026-10-24) — keşif DM hakkından düşmez.
+   */
+  igVisitPerDay: 30,
+  igVisitDelayMin: 45,
+  igVisitDelayMax: 120,
   /** Saatchi'de eser sayısı aralığı. */
   minWorks: 10,
   maxWorks: 30,
