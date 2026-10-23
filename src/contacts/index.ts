@@ -128,6 +128,9 @@ export function nameMatches(email: string, name: string): boolean {
 
 export function addEmail(c: Contacts, email: string, from: string, name: string, trusted = false): void {
   const value = email.trim().toLowerCase();
+  // Artelivo'nun kendi adresleri sanatçının iletişimi olamaz (oturum sahibinin
+  // sayfası okunduğunda buraya düşüyordu, 2026-10-23).
+  if (value.includes("artelivo")) return;
   const known = c.emails.find((e) => e.value === value);
   if (known) {
     // Aynı adres sanatçının kendi yerinde de bulunduysa güvenilir olur.
@@ -272,9 +275,12 @@ export function trustedEmail(e: FoundEmail): boolean {
   return e.trusted === true || e.nameMatch;
 }
 
-/** Davet gidecek tek adres (güvenilirler arasından): adı taşıyan, sonra kendi yerinden gelen. */
-export function bestEmail(c: Contacts): FoundEmail | null {
+/**
+ * Davetin gideceği adresler: güvenilirlerin HEPSİ (kullanıcı, 2026-10-23: "tüm
+ * e-postalarına gider"); adı taşıyan, sonra kendi yerinden gelen önde.
+ */
+export function inviteEmails(c: Contacts): FoundEmail[] {
   const score = (e: FoundEmail) =>
     (e.nameMatch ? 4 : 0) + (e.trusted ? 2 : 0) + (/instagram|saatchi/i.test(e.from) ? 1 : 0);
-  return [...c.emails].filter(trustedEmail).sort((a, b) => score(b) - score(a))[0] ?? null;
+  return [...c.emails].filter(trustedEmail).sort((a, b) => score(b) - score(a));
 }

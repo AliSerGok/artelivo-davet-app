@@ -32,7 +32,7 @@ Yerel masaüstü aracı (Node 24 + TypeScript, `tsx` ile çalışır, build yok)
   WhatsApp/Telegram linkleri sanatçının kendi sayfasında ad taşımasa da kaydedilir. Shopier platformdur.
 - Kanallar (kullanıcı 2026-10-23): Instagram DM; "Mesaj" düğmesi yoksa **Threads** (aynı sınır/bekleme);
   güvenilir e-posta varsa **her durumda** davet e-postası da (`email` işi, info@artelivo.com, artemiz SMTP'si,
-  metin DM'in aynısı). Pinterest ve Saatchi mesaj kanalı DEĞİL. Davetler Instagram kanalında kalır
+  metin DM'in aynısı; güvenilir adreslerin HEPSİNE tek e-posta, `inviteEmails`). Pinterest ve Saatchi mesaj kanalı DEĞİL. Davetler Instagram kanalında kalır
   (artemiz'in e-posta kanalı linki DM'e vermez).
 - Taslak alan kuralları artemiz'deki `apps/web/agent/artist-invites/MAPPING.md`'den OKUNUR (kopya yok).
 

@@ -24,7 +24,7 @@ import {
   setStage,
   syncWithArtelivo,
 } from "./jobs/handlers.js";
-import { bestEmail, readContacts, trustedEmail, urlKey } from "./contacts/index.js";
+import { inviteEmails, readContacts, trustedEmail, urlKey } from "./contacts/index.js";
 import { verifySmtp } from "./mail/index.js";
 import {
   cancelJob,
@@ -1063,12 +1063,12 @@ function emailLine(m: {
   email_sent_at: string | null;
 }) {
   // Gidecek adres yalnız güvenilir olanlardan seçilir (queueEmail ile aynı kural).
-  const best = bestEmail(readContacts(m.contacts, m.name));
-  if (!m.email_to && !best) return "";
+  const to = inviteEmails(readContacts(m.contacts, m.name)).map((e) => e.value).join(", ");
+  if (!m.email_to && !to) return "";
   const st = m.email_status ? (DM_STATUS[m.email_status] ?? { label: m.email_status, tone: "neutral" as Tone }) : null;
-  const canSend = best && !["sent", "sending", "waiting", "unverified"].includes(m.email_status ?? "");
+  const canSend = to && !["sent", "sending", "waiting", "unverified"].includes(m.email_status ?? "");
   return html`<div class="row small">
-    <span>✉ E-posta: <b>${m.email_to ?? best?.value ?? ""}</b></span>
+    <span>✉ E-posta: <b>${m.email_to ?? to}</b></span>
     ${st ? badge(st.label, st.tone) : m.status === "draft" ? html`<span class="muted">mesajla birlikte gider</span>` : ""}
     ${m.email_sent_at ? html`<span class="muted">${m.email_sent_at}</span>` : ""}
     ${canSend && (m.email_status || m.status !== "draft") ? html`<button class="subtle" form="email_${m.artist_id}" data-busy="Sıraya alınıyor">E-postayı gönder</button>` : ""}

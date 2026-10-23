@@ -38,7 +38,7 @@ import {
   addEmail,
   addLink,
   addPhone,
-  bestEmail,
+  inviteEmails,
   hostOf,
   isAggregator,
   nameTokens,
@@ -816,7 +816,8 @@ registerJob("discover", async (artistId): Promise<JobOutcome> => {
 
 // ─── 4c. Davet e-postası ────────────────────────────────────────────────────
 // E-posta bulunduysa DM'e EK olarak (kullanıcı, 2026-10-23); metin DM'in
-// aynısı, link gönderimde yeniden doğrulanır. Tek adres: bestEmail.
+// aynısı, link gönderimde yeniden doğrulanır. Güvenilir adreslerin hepsine
+// tek e-posta (kullanıcı, 2026-10-23); to_addr virgülle ayrılmış liste.
 
 /**
  * Sanatçının e-postası varsa ve henüz gitmediyse davet e-postasını sıraya
@@ -828,8 +829,8 @@ export function queueEmail(artistId: number): boolean {
     .get(artistId) as Artist | undefined;
   const dm = db.prepare("SELECT status FROM dm_messages WHERE artist_id = ?").get(artistId);
   if (!artist?.invite_id || !dm) return false;
-  const best = bestEmail(readContacts(artist.contacts, artist.name));
-  if (!best) return false;
+  const to = inviteEmails(readContacts(artist.contacts, artist.name)).map((e) => e.value);
+  if (!to.length) return false;
   const row = db
     .prepare("SELECT status FROM email_messages WHERE artist_id = ?")
     .get(artistId) as { status: string } | undefined;
@@ -838,7 +839,7 @@ export function queueEmail(artistId: number): boolean {
     `INSERT INTO email_messages (artist_id, to_addr, status) VALUES (?, ?, 'waiting')
      ON CONFLICT(artist_id) DO UPDATE SET to_addr = excluded.to_addr, status = 'waiting',
        error = NULL, updated_at = datetime('now')`,
-  ).run(artistId, best.value);
+  ).run(artistId, to.join(", "));
   enqueue("email", artistId);
   return true;
 }

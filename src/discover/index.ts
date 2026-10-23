@@ -358,13 +358,20 @@ export async function readFacebookContact(
   if (await wall()) return { ...out, loginWall: true };
   // Sayı ile verilen sayfa adlı adrese yönlenir; iletişim sekmesi onun altında.
   const u = new URL(page.url());
+  const id = (u.pathname === "/profile.php" ? u.searchParams.get("id") : u.pathname.split("/").filter(Boolean)[0]) ?? "";
+  // Sayfa bulunamadıysa Facebook ana sayfaya atar; boş adla açılan iletişim
+  // sekmesi OTURUM SAHİBİNİN bilgilerini gösterir (2026-10-23: kullanıcının
+  // kendi e-postasına davet gitti). Sayfa kimliği yoksa ya da iletişim sekmesi
+  // başka birine açıldıysa hiçbir şey okunmaz.
+  if (!id || /^(home\.php|watch|groups|marketplace|gaming|people|pages)$/i.test(id)) return out;
   const contact =
     u.pathname === "/profile.php"
-      ? `${u.origin}/profile.php?id=${u.searchParams.get("id") ?? ""}&sk=about_contact_and_basic_info`
-      : `${u.origin}/${u.pathname.split("/").filter(Boolean)[0] ?? ""}/about_contact_and_basic_info`;
+      ? `${u.origin}/profile.php?id=${id}&sk=about_contact_and_basic_info`
+      : `${u.origin}/${id}/about_contact_and_basic_info`;
   await page.goto(contact, { waitUntil: "domcontentloaded", timeout: 20_000 });
   await sleep(3500);
   if (await wall()) return { ...out, loginWall: true };
+  if (!decodeURIComponent(page.url()).toLowerCase().includes(id.toLowerCase())) return out;
   const main = page.locator('[role="main"]').first();
   const text = await main.innerText({ timeout: 3000 }).catch(() => "");
   out.emails = extractEmails(text.replace(/</g, " "));
