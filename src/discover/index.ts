@@ -286,9 +286,37 @@ export function applyIgInfo(
 ): void {
   c.igBio = info.bio || c.igBio;
   c.igChecked = true;
-  for (const e of extractEmails(info.bio)) addEmail(c, e, "Instagram bio", name, true);
-  for (const p of extractPhones(info.bio.replace(/</g, " "))) addPhone(c, p, "Instagram bio");
-  for (const url of info.links) addLink(c, url, "Instagram bio");
+  addBioMentions(c, applyBio(c, info, "Instagram bio", name, true));
+}
+
+/**
+ * Bio'da anılan başka Instagram hesapları (kullanıcı, 2026-10-23:
+ * @aslan_unsal_photography'nin bio'sundaki @aslan.unsal.art'ta e-posta vardı).
+ * Kayıt olarak eklenir; keşif işi açar (bioMentions).
+ */
+export function addBioMentions(c: Contacts, bio: string): void {
+  for (const m of bio.matchAll(/(?<![\w.@])@([a-z0-9._]{2,30})/gi)) {
+    const handle = m[1]!.replace(/\.+$/, "");
+    if (handle) addLink(c, `https://www.instagram.com/${handle}/`, "Instagram bio");
+  }
+}
+
+/** Bio'da anılan hesaptan okunanlar. E-posta yalnız hesap sanatçının adını taşıyorsa güvenilir. */
+export function applyMentionInfo(
+  c: Contacts,
+  handle: string,
+  info: { bio: string; links: string[] },
+  name: string,
+  own: boolean,
+): void {
+  applyBio(c, info, `Instagram @${handle}`, name, own);
+}
+
+/** Bio'daki e-posta, telefon ve linkler; "X takip ediyor" satırları çıkarılmış bio'yu döner. */
+function applyBio(c: Contacts, info: { bio: string; links: string[] }, from: string, name: string, trusted: boolean): string {
+  for (const e of extractEmails(info.bio)) addEmail(c, e, from, name, trusted);
+  for (const p of extractPhones(info.bio.replace(/</g, " "))) addPhone(c, p, from);
+  for (const url of info.links) addLink(c, url, from);
   // Bio'da düz yazılmış alan adları ("ayseart.com", "linktr.ee/ayse"). "X
   // takip ediyor" satırı kullanıcı adıdır, alan adı değil ("zeynep.artstudio"
   // → "zeynep.art" sanılıyordu, 2026-10-23).
@@ -299,7 +327,17 @@ export function applyIgInfo(
   for (const m of bio.matchAll(
     /(?<![@\w.])(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com(?:\.tr)?|net|org|art|studio|gallery|co|io|me|ee|bio|site|page|link|xyz|info|design|ai|cc|to)(?![\w-])(?:\/[^\s)]*)?/gi,
   ))
-    addLink(c, m[0], "Instagram bio");
+    addLink(c, m[0], from);
+  return bio;
+}
+
+/** Bio'da anılan, henüz açılmamış Instagram hesapları (sanatçının kendisi hariç, en çok 3). */
+export function bioMentions(c: Contacts, own: string): string[] {
+  const handles = c.links
+    .filter((l) => l.label === "Instagram" && l.from === "Instagram bio")
+    .map((l) => /instagram\.com\/([A-Za-z0-9._]+)\/?$/.exec(l.url)?.[1]?.toLowerCase() ?? "")
+    .filter((h) => h && h !== own.toLowerCase() && !["p", "reel", "explore", "stories"].includes(h));
+  return [...new Set(handles)].slice(0, 3).filter((h) => !c.igVisited.includes(h));
 }
 
 // ─── Facebook iletişim bilgisi (2026-10-23) ─────────────────────────────────

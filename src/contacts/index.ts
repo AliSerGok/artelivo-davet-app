@@ -36,6 +36,8 @@ export interface Contacts {
   igBio: string | null;
   /** Instagram profili okundu (onayda ya da keşifte). */
   igChecked: boolean;
+  /** Bio'da anılan (@…) ve keşifte açılan Instagram hesapları. */
+  igVisited: string[];
   /** Kaynak profili iletişim için okundu. */
   sourceChecked: boolean;
   /** Son keşif zamanı ve açılan sayfa sayısı. */
@@ -49,6 +51,7 @@ const empty = (): Contacts => ({
   phones: [],
   igBio: null,
   igChecked: false,
+  igVisited: [],
   sourceChecked: false,
   discoveredAt: null,
   pages: 0,
@@ -80,6 +83,7 @@ export function readContacts(raw: string | null | undefined, name = ""): Contact
   for (const l of parsed.socials ?? []) addLink(c, l.url, "Saatchi");
   c.igBio = parsed.igBio ?? null;
   c.igChecked = Boolean(parsed.igChecked);
+  c.igVisited = Array.isArray(parsed.igVisited) ? parsed.igVisited : [];
   c.sourceChecked = Boolean(parsed.sourceChecked);
   c.discoveredAt = parsed.discoveredAt ?? null;
   c.pages = parsed.pages ?? 0;

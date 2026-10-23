@@ -49,7 +49,10 @@ import {
   urlKey,
 } from "../contacts/index.js";
 import {
+  addBioMentions,
   applyIgInfo,
+  applyMentionInfo,
+  bioMentions,
   crawl,
   extractEmails,
   extractPhones,
@@ -688,31 +691,47 @@ registerJob("discover", async (artistId): Promise<JobOutcome> => {
     }
     c.sourceChecked = true;
   }
-  // Onay penceresinde okunamadıysa (eski onaylar): profil bir kez açılır. Bu
-  // bir Instagram isteğidir: DM ile aynı bekleme ve günlük sınır (ayarlardan).
+  // Onay penceresinde okunamadıysa (eski onaylar) profil, sonra bio'da anılan
+  // hesaplar (en çok 3) birer kez açılır. Her biri bir Instagram isteğidir: DM
+  // ile aynı bekleme ve günlük sınır (ayarlardan); beklerken iş ertelenir.
   const settings = getSettings();
-  const igBudget = !c.igChecked && countToday("ig_profile_visit") < settings.igDmPerDay;
-  if (igBudget && nextDmAt() > Date.now()) {
-    saveContacts(artistId, c); // kaynaktan okunanlar kaybolmasın
-    return { deferUntil: new Date(nextDmAt()) };
-  }
-  if (!c.igChecked && !igBudget) logEvent("ig_profile_visit_skipped", { artistId });
-  if (igBudget) {
+  const own = handleOf(artist.instagram_url);
+  if (c.igBio) addBioMentions(c, c.igBio); // bu özellikten önce okunmuş bio'lar
+  const ownedMention = ownedBy([...nameTokens(artist.name), own]);
+  let next: string | null = !c.igChecked ? own : (bioMentions(c, own)[0] ?? null);
+  while (next) {
+    if (countToday("ig_profile_visit") >= settings.igDmPerDay) {
+      logEvent("ig_profile_visit_skipped", { artistId });
+      break;
+    }
+    if (nextDmAt() > Date.now()) {
+      saveContacts(artistId, c); // okunanlar kaybolmasın
+      return { deferUntil: new Date(nextDmAt()) };
+    }
     logEvent("ig_profile_visit", { artistId });
     try {
-      const info = await visitProfileInfo(page, handleOf(artist.instagram_url));
-      if (info) applyIgInfo(c, info, artist.name);
+      const info = await visitProfileInfo(page, next);
+      if (next === own) {
+        if (info) applyIgInfo(c, info, artist.name);
+        c.igChecked = true;
+      } else {
+        if (info) applyMentionInfo(c, next, info, artist.name, ownedMention(next));
+        c.igVisited.push(next);
+      }
     } catch (error) {
       if (error instanceof InstagramBlockedError) {
         pauseQueue(true);
         logEvent("ig_blocked", error.message);
         notify("Artelivo Davet", "Instagram engel/doğrulama gösterdi — kuyruk durduruldu.");
       }
-      throw error;
+      // Anılan hesap açılamadıysa (silinmiş, yanlış yazılmış) keşif sürer.
+      if (next === own || error instanceof InstagramBlockedError) throw error;
+      c.igVisited.push(next);
     } finally {
       scheduleNextDm(settings.igDmDelayMin, settings.igDmDelayMax);
     }
-    c.igChecked = true;
+    saveContacts(artistId, c);
+    next = bioMentions(c, own)[0] ?? null;
   }
   saveContacts(artistId, c);
   const ident = [

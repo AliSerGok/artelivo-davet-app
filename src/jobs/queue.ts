@@ -96,6 +96,18 @@ function nextJob(): Job | undefined {
     .get() as Job | undefined;
 }
 
+function msUntilNextDeferred(): number {
+  const row = db
+    .prepare(
+      `SELECT MIN(not_before) AS at FROM jobs WHERE status = 'queued' AND not_before IS NOT NULL`,
+    )
+    .get() as { at: string | null };
+  if (!row.at) return 60_000;
+  // not_before UTC, saniye çözünürlüklü ("2026-10-23 00:37:23").
+  const ms = Date.parse(`${row.at.replace(" ", "T")}Z`) - Date.now() + 1000;
+  return Math.min(60_000, Math.max(1000, ms));
+}
+
 async function tick(): Promise<void> {
   if (running || queueState.paused) return;
   if (queueState.uiBusy) {
@@ -104,8 +116,9 @@ async function tick(): Promise<void> {
   }
   const job = nextJob();
   if (!job) {
-    // Ertelenmiş iş varsa bir dakika sonra yeniden bak.
-    timer = setTimeout(() => void tick(), 60_000);
+    // Ertelenmiş iş varsa vaktinde uyan (en geç bir dakika): sabit 60 sn,
+    // 30–50 sn'lik Instagram beklemesini hep ~60 sn'ye çıkarıyordu (2026-10-23).
+    timer = setTimeout(() => void tick(), msUntilNextDeferred());
     return;
   }
   const handler = handlers.get(job.kind);
