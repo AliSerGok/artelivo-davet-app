@@ -613,7 +613,7 @@ async function deliver(artistId: number, via: "instagram" | "threads"): Promise<
     // Her DENEME günlük sınırdan düşer — başarısızlar da Instagram'a gider.
     logEvent("ig_dm", via === "threads" ? { artistId, via } : { artistId });
     if (via === "threads") await sendThreadsDm(page, threadsHandle(artist), text);
-    else await sendDm(page, handleOf(artist.instagram_url), text);
+    else await sendDm(page, handleOf(artist.instagram_url), text, { follow: true });
     db.prepare(
       "UPDATE dm_messages SET status = 'sent', sent_at = datetime('now'), error = NULL, via = ? WHERE artist_id = ?",
     ).run(via, artistId);

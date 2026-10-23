@@ -30,7 +30,8 @@ Yerel masaüstü aracı (Node 24 + TypeScript, `tsx` ile çalışır, build yok)
   adını taşıyorsa güvenilir (kullanıcı 2026-10-23). Platformda çıkan site 2. turda taranır.
   Telefonlar da (kullanıcı 2026-10-23): `tel:`, + ya da 0 ile başlayan 10–15 hane, WhatsApp linkinden numara;
   WhatsApp/Telegram linkleri sanatçının kendi sayfasında ad taşımasa da kaydedilir. Shopier platformdur.
-- Kanallar (kullanıcı 2026-10-23): Instagram DM; "Mesaj" düğmesi yoksa **Threads** (aynı sınır/bekleme);
+- Kanallar (kullanıcı 2026-10-23): Instagram DM (2026-10-24: DM'den önce profil takip edilir, aynı
+  ziyarette; ayrı sınır yok — DM sınırı/beklemesi geçerli); "Mesaj" düğmesi yoksa **Threads** (aynı sınır/bekleme);
   güvenilir e-posta varsa **her durumda** davet e-postası da (`email` işi, info@artelivo.com, artemiz SMTP'si,
   metin DM'in aynısı; güvenilir adreslerin HEPSİNE tek e-posta, `inviteEmails`). Pinterest ve Saatchi mesaj kanalı DEĞİL. Davetler Instagram kanalında kalır
   (artemiz'in e-posta kanalı linki DM'e vermez).

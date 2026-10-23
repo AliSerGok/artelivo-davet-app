@@ -123,11 +123,13 @@ export async function sendDm(
   page: Page,
   handle: string,
   text: string,
+  options: { follow?: boolean } = {},
 ): Promise<void> {
   await ensureOnInstagram(page);
   await page.goto(`${IG}/${handle}/`, { waitUntil: "domcontentloaded" });
   await sleep(2500);
   await assertNotBlocked(page, "profil açılırken");
+  if (options.follow) await followProfile(page);
 
   const messageButton = page
     .getByRole("button", { name: /^(Mesaj gönder|Mesaj|Message)$/i })
@@ -151,6 +153,23 @@ export async function sendDm(
     .click({ timeout: 1500 })
     .catch(() => {});
   await typeAndVerify(page, box, text);
+}
+
+/**
+ * Mesajdan önce takip (kullanıcı 2026-10-24): açık profilde "Takip et"e basar.
+ * Zaten takipte/istek gönderilmişse düğme farklıdır, dokunulmaz. Gizli hesapta
+ * takip isteği gider; "Mesaj" düğmesi yine yoksa akış Threads'e geçer.
+ * Düğme bulunamazsa ya da tıklanamazsa DM yine denenir; engel çıkarsa durur.
+ */
+async function followProfile(page: Page): Promise<void> {
+  const followButton = page
+    .locator("main header")
+    .getByRole("button", { name: /^(Takip et|Geri takip et|Follow|Follow Back)$/i })
+    .first();
+  if ((await followButton.count()) === 0) return;
+  await followButton.click({ timeout: 3000 }).catch(() => {});
+  await sleep(1500 + Math.random() * 1500);
+  await assertNotBlocked(page, "takip edilirken");
 }
 
 /**
